@@ -54,8 +54,8 @@ if TYPE_CHECKING:
     from cardinal import Cardinal
 
 NAME = "AutoOffline"
-VERSION = "1.0.0"
-DESCRIPTION = "Выдача Steam Guard, TOTP и Denuvo-активаций через FunPay автоматически и безопасно."
+VERSION = "1.1.0"
+DESCRIPTION = "Выдача Steam Guard (SDA/IMAP), TOTP и Denuvo-активаций через FunPay автоматически и безопасно."
 CREDITS = "@tinechelovec"
 UUID = "6f7d9d18-3c69-48bb-92f1-3e91e4f1b1c8"
 SETTINGS_PAGE = True
@@ -95,7 +95,13 @@ DB_FILE = os.path.join(PLUGIN_FOLDER, "database.json")
 DB_BACKUP_FILE = DB_FILE + ".bak"
 LOCAL_KEY_FILE = os.path.join(PLUGIN_FOLDER, ".local.key")
 NOTIFY_LOG_FILE = os.path.join(PLUGIN_FOLDER, "runtime.log")
+TEXT_LOG_FILE = os.path.join(PLUGIN_FOLDER, "log.txt")
 os.makedirs(PLUGIN_FOLDER, exist_ok=True)
+try:
+    if not os.path.exists(TEXT_LOG_FILE):
+        open(TEXT_LOG_FILE, "a", encoding="utf-8").close()
+except Exception:
+    pass
 
 DB_FORMAT = "AutoOffline-encrypted-db"
 DB_VERSION = 1
@@ -127,6 +133,8 @@ CB_ACCOUNT_TOGGLE = f"{UUID}:at"
 CB_ACCOUNT_LIMITS = f"{UUID}:al"
 CB_ACCOUNT_LIMIT_COUNT = f"{UUID}:alc"
 CB_ACCOUNT_LIMIT_RESET = f"{UUID}:alr"
+CB_ACCOUNT_LIMIT_MODE = f"{UUID}:alm"
+CB_ACCOUNT_LIMIT_TIME = f"{UUID}:alt"
 CB_ACCOUNT_TEMPLATE = f"{UUID}:am"
 CB_ACCOUNT_SECRET = f"{UUID}:as"
 CB_ACCOUNT_DENUVO = f"{UUID}:av"
@@ -209,18 +217,23 @@ SENSITIVE_KEYS = {
 }
 ACCOUNT_TYPES = {
     "steam_sda": "Steam Guard (SDA)",
+    "steam_email": "Steam Guard (Email / IMAP)",
     "totp": "Google Authenticator / TOTP",
     "rockstar_email": "Rockstar-код из почты",
     "denuvo": "Denuvo / слот",
 }
-ACCOUNT_CREATION_TYPES = ("steam_sda", "totp")
-LOT_CREATION_TYPES = ("steam_sda", "totp")
+ACCOUNT_CREATION_TYPES = ("steam_sda", "steam_email", "totp")
+LOT_CREATION_TYPES = ("steam_sda", "steam_email", "totp")
 ACCOUNT_TYPE_ALIASES = {
     "steam_sda": "steam_sda",
     "steam": "steam_sda",
     "sda": "steam_sda",
     "steam_guard": "steam_sda",
     "steamguard": "steam_sda",
+    "steam_email": "steam_email",
+    "steam_mail": "steam_email",
+    "steam_imap": "steam_email",
+    "email_steam": "steam_email",
     "totp": "totp",
     "otp": "totp",
     "2fa": "totp",
@@ -500,6 +513,7 @@ def _default_db() -> dict:
             },
             "templates": {
                 "steam_sda": "🔐 Код Steam Guard\n\n【 {code} 】\n\n📋 Скопируйте код и вставьте его в Steam.\n📊 Осталось запросов: {left}/{total}",
+                "steam_email": "📧 Код Steam Guard из почты\n\n【 {code} 】\n\n📋 Код подходит только для входа в Steam.\n📊 Осталось запросов: {left}/{total}",
                 "totp": "🔐 Код подтверждения\n\n【 {code} 】\n\n📊 Осталось запросов: {left}/{total}",
                 "rockstar_email": "🔐 Код Rockstar\n\n【 {code} 】\n\n📊 Осталось запросов: {left}/{total}",
                 "denuvo": "✅ Denuvo-доступ выдан\n\nАккаунт: {account}\nАктивации: {slot_info}",
@@ -587,6 +601,10 @@ def _ensure_db_shape(db: dict) -> dict:
             account.setdefault("enabled", True)
             account.setdefault("issued", 0)
             account.setdefault("limit_total", None)
+            account.setdefault("limit_mode", "count")
+            if str(account.get("limit_mode") or "count") not in {"count", "time"}:
+                account["limit_mode"] = "count"
+            account.setdefault("limit_time_seconds", 0)
             account.setdefault("cooldown_seconds", 0)
             account.setdefault("limit_reset_seconds", _safe_int(account.get("cooldown_seconds"), 0, 0, 31_536_000))
             account.setdefault("template", "")
@@ -966,8 +984,34 @@ def _terminal_log_line(event_type: str, message: str, details: dict, *, colored:
     details_text = "  ·  ".join(suffix_parts)
     return f"{head}  {ANSI_DIM}·  {details_text}{ANSI_RESET}"
 
+
+def _append_text_log(event_type: str, message: str, details: dict) -> None:
+    try:
+        line = _terminal_log_line(event_type, message, details, colored=False)
+        stamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+        os.makedirs(PLUGIN_FOLDER, exist_ok=True)
+        with open(TEXT_LOG_FILE, "a", encoding="utf-8") as log_file:
+            log_file.write(f"[{stamp}] {line}\n")
+    except Exception as e:
+        logger.debug("%s text log write failed: %s", PREFIX, e)
+
+
+def _is_colored_license_event(event_name: str, message: str) -> bool:
+    event_name = str(event_name or "").upper()
+    message_l = str(message or "").casefold()
+    if event_name in {"SERVER", "START"}:
+        return True
+    license_words = ("лиценз", "license", "регистрац", "installation", "build_hash", "сервер", "api")
+    return any(word in message_l for word in license_words)
+
+
 def _log(event_type: str, message: str, **details: Any) -> None:
     event_name = str(event_type or "INFO").upper()
+
+    # Обычный log.txt — рабочие события плагина: заказы, выдачи, ошибки, настройки и т.д.
+    _append_text_log(event_name, message, details)
+
+    # Терминал Cardinal оставляем читаемым и цветным.
     line = _terminal_log_line(event_name, message, details, colored=True)
     if event_name in {"ERROR", "FAILED", "CRITICAL"}:
         logger.error("%s %s", PREFIX, line)
@@ -976,7 +1020,8 @@ def _log(event_type: str, message: str, **details: Any) -> None:
     else:
         logger.info("%s %s", PREFIX, line)
 
-    if _db_locked():
+    # Цветной HTML-лог теперь хранит только лицензию / регистрацию / серверный lifecycle.
+    if _db_locked() or not _is_colored_license_event(event_name, message):
         return
     entry = {
         "ts": _now(),
@@ -991,12 +1036,7 @@ def _log(event_type: str, message: str, **details: Any) -> None:
         try:
             _db_save()
         except Exception as e:
-            logger.error(
-                "%s %s",
-                PREFIX,
-                f"{ANSI_COLORS['red']}❌ [ОШИБКА] Не удалось сохранить лог{ANSI_RESET}"
-                f"  {ANSI_DIM}·  ошибка: {e}{ANSI_RESET}",
-            )
+            logger.error("%s Не удалось сохранить цветной лог: %s", PREFIX, e)
 
 def _stats_inc(key: str, amount: int = 1) -> None:
     if _db_locked():
@@ -1108,7 +1148,9 @@ def _email_text(msg) -> str:
             parts.append(payload.decode(msg.get_content_charset() or "utf-8", errors="replace"))
     return "\n".join(parts)
 
+
 def fetch_rockstar_code(account: dict) -> Tuple[Optional[str], str]:
+    # Legacy provider is kept only for backward compatibility with old databases.
     data = account.get("data") or {}
     host = str(data.get("imap_host") or "").strip()
     port = _safe_int(data.get("imap_port"), 993, 1, 65535)
@@ -1163,11 +1205,176 @@ def fetch_rockstar_code(account: dict) -> Tuple[Optional[str], str]:
             except Exception:
                 pass
 
+
+def _imap_servers_for_email(email_address: str) -> List[str]:
+    domain = (str(email_address or "").split("@")[-1] if "@" in str(email_address or "") else "").lower().strip()
+    if not domain:
+        raise ValueError("Некорректный email.")
+    if domain.endswith("mail.ru") or domain in {"bk.ru", "inbox.ru", "list.ru", "internet.ru"}:
+        return ["imap.mail.ru"]
+    if "gmail" in domain:
+        return ["imap.gmail.com"]
+    if "yandex" in domain or domain in {"ya.ru"}:
+        return ["imap.yandex.ru"]
+    if "rambler" in domain:
+        return ["imap.rambler.ru"]
+    if "firstmail" in domain:
+        return ["imap.firstmail.ru"]
+    if "notletters" in domain:
+        return ["imap.notletters.com"]
+    if any(name in domain for name in ("outlook", "hotmail", "live", "msn")):
+        return ["outlook.office365.com", "imap-mail.outlook.com"]
+    raise ValueError("Неизвестный почтовый провайдер. Пока поддерживаются популярные IMAP-провайдеры из примера.")
+
+
+def _check_imap_credentials(email_address: str, password: str) -> Tuple[bool, str, str]:
+    try:
+        servers = _imap_servers_for_email(email_address)
+    except Exception as e:
+        return False, "", str(e)
+    last_error = ""
+    for host in servers:
+        client = None
+        try:
+            client = imaplib.IMAP4_SSL(host, 993, timeout=15)
+            client.login(email_address, password)
+            return True, host, ""
+        except Exception as e:
+            last_error = str(e)
+        finally:
+            if client is not None:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+    return False, "", last_error or "Не удалось войти по IMAP."
+
+
+def _mail_visible_text(msg) -> str:
+    raw = _email_text(msg)
+    # Для Steam достаточно текстового содержимого; HTML превращаем в обычный текст без внешних зависимостей.
+    raw = re.sub(r"(?is)<(script|style).*?>.*?</\\1>", " ", raw)
+    raw = re.sub(r"(?s)<[^>]+>", " ", raw)
+    return unicodedata.normalize("NFKC", unescape(raw)).replace("\xa0", " ")
+
+
+_STEAM_LOGIN_POS_RE = re.compile(
+    r"(пытает(есь|ся)\s+войти|попытк\w*\s+входа|для\s+входа|войти\s+в\s+аккаунт|"
+    r"нов(ое|ый)\s+(устройств|браузер)|attempt\s+to\s+log\s*in|trying\s+to\s+log\s*in|"
+    r"sign\s*in|log\s*in|new\s+(device|browser))",
+    re.I,
+)
+_STEAM_BLOCK_RE = re.compile(
+    r"(trade\s+confirmation|confirm\s+your\s+(trade|market)|steam\s+guard\s+confirmation|"
+    r"market\s+(listing|transaction)|подтвержден\w*\s+(обмен|продаж|покупк)|торгов\w*\s+площадк|"
+    r"обмен\w*|маркет|смен\w*\s+(почт|email|парол)|измен\w*\s+(почт|email|парол)|"
+    r"email\s+change|password\s+change|steam\s+guard\s+(disabled|removed))",
+    re.I,
+)
+
+
+def _is_steam_login_guard_email(msg) -> bool:
+    subject = _decode_header(msg.get("Subject", ""))
+    frm_raw = _decode_header(msg.get("From", ""))
+    frm_addr = str(email.utils.parseaddr(frm_raw)[1] or "").lower().strip()
+    body = _mail_visible_text(msg)
+    blob = f"{subject}\n{frm_raw}\n{body}"
+    blob_l = blob.casefold()
+    if "steam guard" not in blob_l and "steamguard" not in blob_l and "стим гард" not in blob_l:
+        return False
+    if frm_addr and not (frm_addr.endswith("@steampowered.com") or frm_addr.endswith("@steamcommunity.com")):
+        return False
+    if _STEAM_BLOCK_RE.search(blob):
+        return False
+    return bool(_STEAM_LOGIN_POS_RE.search(blob))
+
+
+def _extract_steam_email_code(msg) -> Optional[str]:
+    subject = _decode_header(msg.get("Subject", ""))
+    body = _mail_visible_text(msg)
+    combined = unicodedata.normalize("NFKC", subject + "\n" + body)
+    patterns = [
+        r"(?:\bкод\b|\bcode\b)[^A-Z0-9]{0,40}([A-Z0-9]{5,7})",
+        r"steam\s*guard[^A-Z0-9]{0,200}([A-Z0-9]{5,7})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, combined, re.I | re.S)
+        if match:
+            return str(match.group(1)).upper().strip()
+    for line in combined.splitlines():
+        token = "".join(ch for ch in line.strip() if not ch.isspace())
+        if re.fullmatch(r"[A-Z0-9]{5,7}", token, re.I):
+            return token.upper()
+    return None
+
+
+def fetch_steam_email_code(account: dict) -> Tuple[Optional[str], str]:
+    data = account.setdefault("data", {})
+    username = str(data.get("email") or "").strip()
+    password = str(data.get("mail_password") or "")
+    host = str(data.get("imap_host") or "").strip()
+    last_uid = str(data.get("last_uid") or "").strip()
+    max_age_minutes = _safe_int(data.get("max_age_minutes"), 20, 1, 1440)
+    if not username or not password:
+        return None, "IMAP не настроен"
+    hosts = [host] if host else _imap_servers_for_email(username)
+    last_error = ""
+    for current_host in hosts:
+        client = None
+        try:
+            client = imaplib.IMAP4_SSL(current_host, 993, timeout=15)
+            client.login(username, password)
+            status, _ = client.select("INBOX", readonly=True)
+            if status != "OK":
+                last_error = "Не удалось открыть INBOX"
+                continue
+            status, rows = client.uid("search", None, '(OR FROM "noreply@steampowered.com" FROM "support@steampowered.com")')
+            if status != "OK" or not rows or not rows[0]:
+                return None, "Письма Steam не найдены"
+            uids = rows[0].split()
+            for uid in reversed(uids[-60:]):
+                uid_s = uid.decode(errors="ignore") if isinstance(uid, bytes) else str(uid)
+                if last_uid and uid_s == last_uid:
+                    break
+                status, fetched = client.uid("fetch", uid, "(RFC822)")
+                if status != "OK" or not fetched:
+                    continue
+                raw = next((row[1] for row in fetched if isinstance(row, tuple) and len(row) > 1), None)
+                if not raw:
+                    continue
+                msg = email.message_from_bytes(raw)
+                if not _is_steam_login_guard_email(msg):
+                    continue
+                date_tuple = email.utils.parsedate_tz(msg.get("Date", ""))
+                if date_tuple:
+                    mail_ts = int(email.utils.mktime_tz(date_tuple))
+                    if _now() - mail_ts > max_age_minutes * 60:
+                        continue
+                code = _extract_steam_email_code(msg)
+                if not code:
+                    continue
+                data["imap_host"] = current_host
+                data["pending_uid"] = uid_s
+                return code, "ok"
+            return None, "Новое письмо Steam Guard для входа не найдено"
+        except Exception as e:
+            last_error = str(e)
+        finally:
+            if client is not None:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+    return None, last_error or "Ошибка IMAP"
+
+
 def _get_account_code(account: dict) -> Tuple[Optional[str], str]:
     account_type = _canonical_account_type(account.get("type"))
     if account_type == "steam_sda":
         code = generate_steam_guard_code(str(account.get("secret") or ""))
         return code, "ok" if code else "ошибка shared_secret"
+    if account_type == "steam_email":
+        return fetch_steam_email_code(account)
     if account_type == "totp":
         code = generate_totp_code(str(account.get("secret") or ""))
         return code, "ok" if code else "ошибка TOTP secret"
@@ -1701,35 +1908,74 @@ def _check_usage(lot: dict, order: dict, buyer_id: str) -> Tuple[bool, str, dict
     )
     return True, "ok", rec, _safe_int(rec.get("count"), 0), 0
 
+
+def _account_limit_mode(account: dict) -> str:
+    mode = str(account.get("limit_mode") or "count").strip().casefold()
+    return mode if mode in {"count", "time"} else "count"
+
+
+def _reset_account_usage(account_id: str) -> None:
+    if _db_locked():
+        return
+    aid = str(account_id or "")
+    for rec in _db_get().setdefault("usage", {}).values():
+        if not isinstance(rec, dict):
+            continue
+        rec.setdefault("account_counts", {}).pop(aid, None)
+        rec.setdefault("account_windows", {}).pop(aid, None)
+
+
 def _account_limit_window(account: dict, rec: dict) -> dict:
     account_id = str(account.get("id"))
     windows = rec.setdefault("account_windows", {})
     legacy_count = _safe_int(rec.get("account_counts", {}).get(account_id), 0)
     row = windows.setdefault(account_id, {"count": legacy_count, "started_at": 0})
     now = _now()
-    reset_seconds = _safe_int(account.get("limit_reset_seconds"), 0, 0, 31_536_000)
     started_at = _safe_int(row.get("started_at"), 0)
     if started_at <= 0:
         row["started_at"] = now
-    elif reset_seconds > 0 and now - started_at >= reset_seconds:
-        row["count"] = 0
-        row["started_at"] = now
-        rec.setdefault("account_counts", {})[account_id] = 0
+        started_at = now
+
+    if _account_limit_mode(account) == "count":
+        reset_seconds = _safe_int(account.get("limit_reset_seconds"), 0, 0, 31_536_000)
+        if reset_seconds > 0 and now - started_at >= reset_seconds:
+            row["count"] = 0
+            row["started_at"] = now
+            rec.setdefault("account_counts", {})[account_id] = 0
     return row
 
+
 def _account_limit_values(account: dict, rec: dict, *, prospective: bool = False) -> Tuple[Any, Any]:
+    mode = _account_limit_mode(account)
+    row = _account_limit_window(account, rec)
+    if mode == "time":
+        duration = _safe_int(account.get("limit_time_seconds"), 0, 0, 31_536_000)
+        if duration <= 0:
+            return "∞", "∞"
+        started_at = _safe_int(row.get("started_at"), _now())
+        if _now() - started_at >= duration:
+            return 0, _fmt_duration(duration)
+        return "∞", "∞"
+
     limit = account.get("limit_total")
     if limit in (None, "", 0, "0"):
         return "∞", "∞"
     total = max(1, _safe_int(limit, 1, 1, 1000000))
-    row = _account_limit_window(account, rec)
     used = _safe_int(row.get("count"), 0) + (1 if prospective else 0)
     return max(0, total - used), total
 
+
 def _account_limit_ok(account: dict, rec: dict) -> bool:
-    left, total = _account_limit_values(account, rec)
-    if total != "∞" and _safe_int(left, 0) <= 0:
-        return False
+    if _account_limit_mode(account) == "time":
+        duration = _safe_int(account.get("limit_time_seconds"), 0, 0, 31_536_000)
+        if duration > 0:
+            row = _account_limit_window(account, rec)
+            if _now() - _safe_int(row.get("started_at"), _now()) >= duration:
+                return False
+    else:
+        left, total = _account_limit_values(account, rec)
+        if total != "∞" and _safe_int(left, 0) <= 0:
+            return False
     denuvo = account.get("denuvo") or {}
     if _safe_int(denuvo.get("cooldown_until"), 0) > _now():
         return False
@@ -2280,6 +2526,11 @@ def _commit_issue(
         window = _account_limit_window(account, rec)
         window["count"] = _safe_int(window.get("count"), 0) + 1
         rec.setdefault("account_counts", {})[account["id"]] = window["count"]
+        if _canonical_account_type(account.get("type")) == "steam_email":
+            mail_data = account.setdefault("data", {})
+            pending_uid = str(mail_data.pop("pending_uid", "") or "").strip()
+            if pending_uid:
+                mail_data["last_uid"] = pending_uid
         account["issued"] = _safe_int(account.get("issued"), 0) + 1
         order["issued"] = _safe_int(order.get("issued"), 0) + 1
 
@@ -2770,6 +3021,7 @@ def _process_steam_queue_job(job_id: str) -> None:
         lot_id=lot.get("id"),
         account_id=account.get("id"),
         buyer=buyer_nick,
+        code=code,
         left=left,
         total=total,
     )
@@ -3047,6 +3299,7 @@ def _reuse_denuvo_activation(
         lot_id=lot.get("id"),
         account_id=account.get("id"),
         buyer=buyer_nick,
+        code=code,
         left=left,
         total=total,
         active_slots=_safe_int(denuvo.get("active_slots"), 0),
@@ -3347,7 +3600,7 @@ def _process_code_request(cardinal: "Cardinal", event: Any, lot: dict) -> bool:
         _log("ERROR", "Не удалось отправить код покупателю", error=send_error, order_id=order.get("order_id"))
         return True
     left, total = _commit_issue(lot, order, account, buyer_id, rec, server_data)
-    _log("ISSUED", "Код/аккаунт выдан", order_id=order.get("order_id"), lot_id=lot.get("id"), account_id=account.get("id"), buyer=buyer_nick, left=left, total=total, allocation=allocation_mode)
+    _log("ISSUED", "Код/аккаунт выдан", order_id=order.get("order_id"), lot_id=lot.get("id"), account_id=account.get("id"), buyer=buyer_nick, code=code or "", left=left, total=total, allocation=allocation_mode)
     _notify("code_issued", f"✅ <b>Код успешно выдан</b>\nПокупатель: <code>{escape(buyer_nick)}</code>\nЛот: <b>{escape(str(lot.get('title') or lot.get('funpay_lot_id')))}</b>\nАккаунт: <b>{escape(str(account.get('name')))}</b>\nОсталось запросов: <b>{left}/{total}</b>")
     return True
 
@@ -3444,9 +3697,9 @@ def _accounts_kb() -> K:
     kb.row(B("◀️ Назад", callback_data=CB_SETTINGS))
     return kb
 
+
 def _account_text(account: dict) -> str:
-    limit = "∞" if account.get("limit_total") in (None, "", 0) else str(account.get("limit_total"))
-    reset_seconds = _safe_int(account.get("limit_reset_seconds"), 0)
+    mode = _account_limit_mode(account)
     queue_cfg = account.get("queue") or {}
     denuvo = account.get("denuvo") or {}
     account_type = _canonical_account_type(account.get("type"))
@@ -3456,28 +3709,45 @@ def _account_text(account: dict) -> str:
         queue_name = "TOTP" if account_type == "totp" else "Steam Guard"
         queue_text = f"ВКЛ · {interval} секунд" if queue_cfg.get("enabled") else "ВЫКЛ"
         extra += f"\n• Очередь {queue_name}: <b>{queue_text}</b>"
+    if account_type == "steam_email":
+        mail_data = account.get("data") or {}
+        mail_addr = str(mail_data.get("email") or "—")
+        host = str(mail_data.get("imap_host") or "авто")
+        extra += f"\n• Почта: <code>{escape(mail_addr)}</code>\n• IMAP: <code>{escape(host)}</code>"
     if account_type == "steam_sda":
         game = str(denuvo.get("game_id") or "—")
         extra += f"\n• Denuvo: <b>{'ВКЛ' if denuvo.get('enabled') else 'ВЫКЛ'}</b> · игра <b>{escape(game)}</b>"
     if denuvo.get("enabled") or account_type == "denuvo":
         extra += f"\n• Denuvo-слоты: <b>{denuvo.get('active_slots', 0)}/{denuvo.get('slot_limit', 5)}</b>"
-    if account.get("limit_total") in (None, "", 0):
-        reset_text = "—"
-    elif reset_seconds > 0:
-        reset_text = _fmt_duration(reset_seconds)
+
+    if mode == "time":
+        duration = _safe_int(account.get("limit_time_seconds"), 0)
+        limit_line = f"по времени · {_fmt_duration(duration)}" if duration > 0 else "по времени · без ограничения"
+        reset_line = "не используется"
     else:
-        reset_text = "не сбрасывается"
+        limit = "∞" if account.get("limit_total") in (None, "", 0) else str(account.get("limit_total"))
+        reset_seconds = _safe_int(account.get("limit_reset_seconds"), 0)
+        limit_line = f"по количеству · {limit}"
+        if account.get("limit_total") in (None, "", 0):
+            reset_line = "—"
+        elif reset_seconds > 0:
+            reset_line = _fmt_duration(reset_seconds)
+        else:
+            reset_line = "не сбрасывается"
+
+    credential_label = "IMAP: настроен" if account_type == "steam_email" else f"Secret: <code>{escape(_mask(str(account.get('secret') or '')))}</code>"
     return (
         f"<b>🎮 {escape(str(account.get('name')))}</b>\n\n"
         f"• ID: <code>{escape(str(account.get('id')))}</code>\n"
         f"• Тип: <b>{escape(ACCOUNT_TYPES.get(account_type, account_type))}</b>\n"
         f"• Состояние: <b>{'ВКЛ' if account.get('enabled', True) else 'ВЫКЛ'}</b>\n"
-        f"• Secret: <code>{escape(_mask(str(account.get('secret') or '')))}</code>\n"
-        f"• Лимит кодов: <b>{escape(limit)}</b>\n"
-        f"• Сброс лимита: <b>{reset_text}</b>\n"
+        f"• {credential_label}\n"
+        f"• Лимит кодов: <b>{escape(limit_line)}</b>\n"
+        f"• Сброс лимита: <b>{escape(reset_line)}</b>\n"
         f"• Выдано: <b>{_safe_int(account.get('issued'), 0)}</b>\n"
         f"• Свой текст выдачи: <b>{'да' if str(account.get('template') or '').strip() else 'нет'}</b>{extra}"
     )
+
 
 def _account_kb(account: dict) -> K:
     aid = account["id"]
@@ -3485,8 +3755,8 @@ def _account_kb(account: dict) -> K:
     kb = K()
     kb.row(B(f"{'🔴 Выключить выдачу' if account.get('enabled', True) else '🟢 Включить выдачу'}", callback_data=f"{CB_ACCOUNT_TOGGLE}:{aid}"))
     kb.row(B("✏️ Изменить название", callback_data=f"{CB_ACCOUNT_NAME}:{aid}"))
-    kb.row(B("🔐 Заменить secret", callback_data=f"{CB_ACCOUNT_SECRET}:{aid}"))
-    kb.row(B("📛 Лимит кодов и сброс", callback_data=f"{CB_ACCOUNT_LIMITS}:{aid}"))
+    kb.row(B("📧 Заменить IMAP" if account_type == "steam_email" else "🔐 Заменить secret", callback_data=f"{CB_ACCOUNT_SECRET}:{aid}"))
+    kb.row(B("📛 Лимиты кодов", callback_data=f"{CB_ACCOUNT_LIMITS}:{aid}"))
     if account_type in {"steam_sda", "totp"}:
         queue_enabled = bool((account.get("queue") or {}).get("enabled"))
         kb.row(B(f"⏳ Очередь · {'ВКЛ' if queue_enabled else 'ВЫКЛ'}", callback_data=f"{CB_ACCOUNT_QUEUE}:{aid}"))
@@ -3753,7 +4023,7 @@ def _maintenance_text() -> str:
 
 def _maintenance_kb() -> K:
     kb = K()
-    kb.row(B("📄 Скачать логи", callback_data=CB_LOGS))
+    kb.row(B("📄 log.txt + 🎨 лицензии", callback_data=CB_LOGS))
     kb.row(B("📤 Скачать бэкап", callback_data=CB_BACKUP))
     kb.row(B("📥 Импортировать бэкап", callback_data=CB_IMPORT))
     kb.row(B("🩺 Проверить базу", callback_data=CB_DB_CHECK))
@@ -3834,11 +4104,12 @@ def _update_kb() -> K:
     kb.row(B("◀️ Назад", callback_data=CB_HOME))
     return kb
 
+
 def _delete_plugin_text() -> str:
     return (
         "<b>🗑 Удаление плагина</b>\n\n"
-        "Будет удалён текущий файл плагина. База и бэкапы останутся в папке хранения.\n\n"
-        "После удаления перезапустите Cardinal/FunPayCardinal."
+        f"Вы точно хотите удалить <b>{escape(NAME)}</b>?\n\n"
+        "Сначала будет вызван штатный менеджер плагинов Cardinal. Если он недоступен, AutoOffline удалит только текущий .py-файл. База, log.txt и бэкапы останутся в storage/plugins/AutoOffline."
     )
 
 def _delete_plugin_kb() -> K:
@@ -4029,6 +4300,7 @@ def _show_lot_account_picker(cardinal: "Cardinal", call, mode: str, page: int = 
     _safe_edit(bot, chat_id, call.message.id, text, _lot_account_picker_kb(mode, account_type, page, lot))
     _answer(bot, call)
 
+
 def _handle_type_choice(cardinal: "Cardinal", call) -> None:
     bot = cardinal.telegram.bot
     parts = str(call.data).split(":")
@@ -4042,12 +4314,16 @@ def _handle_type_choice(cardinal: "Cardinal", call) -> None:
             _answer(bot, call, "Этот тип аккаунта не поддерживается.", True)
             return
         state["data"]["type"] = account_type
-        state["step"] = "secret"
-        if account_type == "steam_sda":
-            prompt = "Отправьте файл <code>.maFile</code> — название и shared_secret будут взяты автоматически, или отправьте <code>shared_secret</code> текстом."
+        if account_type == "steam_email":
+            state["step"] = "mail_email"
+            prompt = "📧 Отправьте email почтового ящика Steam. IMAP-сервер будет определён автоматически."
         else:
-            prompt = "Отправьте Base32 secret или целую ссылку <code>otpauth://...</code>. Плагин сам извлечёт параметр <code>secret</code> и проверит код."
-        _safe_edit(bot, chat_id, call.message.id, f"➕ <b>Добавление аккаунта</b>\n\nТип: <b>{escape(ACCOUNT_TYPES.get(account_type, account_type))}</b>\n\n🔐 {prompt}\n\nСообщение будет удалено сразу после получения.", _cancel_kb(CB_ACCOUNTS))
+            state["step"] = "secret"
+            if account_type == "steam_sda":
+                prompt = "🔐 Отправьте файл <code>.maFile</code> — название и shared_secret будут взяты автоматически, или отправьте <code>shared_secret</code> текстом."
+            else:
+                prompt = "🔐 Отправьте Base32 secret или целую ссылку <code>otpauth://...</code>. Плагин сам извлечёт параметр <code>secret</code> и проверит код."
+        _safe_edit(bot, chat_id, call.message.id, f"➕ <b>Добавление аккаунта</b>\n\nТип: <b>{escape(ACCOUNT_TYPES.get(account_type, account_type))}</b>\n\n{prompt}\n\nСообщение будет удалено сразу после получения.", _cancel_kb(CB_ACCOUNTS))
         _answer(bot, call)
         return
     if target == "lot" and state and state.get("mode") == "add_lot":
@@ -4098,6 +4374,10 @@ def _account_queue_choice_kb() -> K:
 
 def _prompt_account_queue_choice(bot, chat_id: int, state: dict) -> None:
     account_type = str(state.get("data", {}).get("type") or "")
+    if account_type not in {"steam_sda", "totp"}:
+        state.setdefault("data", {})["queue_enabled"] = False
+        _prompt_account_limit_mode(bot, chat_id, state)
+        return
     state["step"] = "queue_choice"
     if account_type == "totp":
         title = "Очередь TOTP"
@@ -4130,17 +4410,101 @@ def _account_denuvo_choice_kb(target: str = "add", account_id: str = "") -> K:
     kb.row(B("◀️ Отменить", callback_data=CB_CANCEL if target == "add" else f"{CB_ACCOUNT_OPEN}:{account_id}"))
     return kb
 
+
+def _account_limit_mode_choice_kb(target: str = "add", account_id: str = "") -> K:
+    prefix = f"{CB_ACCOUNT_LIMIT_MODE}:{target}"
+    if account_id:
+        prefix += f":{account_id}"
+    kb = K()
+    kb.row(B("1️⃣ По количеству кодов", callback_data=f"{prefix}:count"))
+    kb.row(B("2️⃣ По времени (безлимит кодов)", callback_data=f"{prefix}:time"))
+    kb.row(B("◀️ Отменить", callback_data=CB_CANCEL if target == "add" else f"{CB_ACCOUNT_LIMITS}:{account_id}"))
+    return kb
+
+
+def _prompt_account_limit_mode(bot, chat_id: int, state: dict) -> None:
+    state["step"] = "limit_mode"
+    _account_flow_edit(
+        bot,
+        chat_id,
+        state,
+        "📛 <b>Тип лимита кодов</b>\n\n"
+        "1️⃣ <b>По количеству</b> — старый режим: покупатель получает заданное число кодов; при желании можно настроить сброс счётчика.\n\n"
+        "2️⃣ <b>По времени</b> — в течение указанного времени покупатель может запрашивать коды без ограничения по количеству. После окончания времени доступ закрывается; второй лимит/сброс не предлагается.",
+        _account_limit_mode_choice_kb("add"),
+    )
+
+
 def _prompt_account_limit_count(bot, chat_id: int, state: dict) -> None:
     state["step"] = "limit_count"
     _account_flow_edit(
         bot,
         chat_id,
         state,
-        "📛 <b>Лимит кодов</b>\n\n"
+        "🔢 <b>Лимит по количеству</b>\n\n"
         "Сколько кодов сможет получить один покупатель по своему заказу?\n\n"
         "Отправьте число от <code>1</code> и выше. Для безлимита отправьте <code>-</code>.\n"
-        "Если укажете число, следующим шагом выберем, через какое время этот лимит сбрасывается.",
+        "Если укажете число, следующим шагом можно задать время сброса счётчика.",
     )
+
+
+def _prompt_account_limit_time(bot, chat_id: int, state: dict) -> None:
+    state["step"] = "limit_time"
+    _account_flow_edit(
+        bot,
+        chat_id,
+        state,
+        "⏱ <b>Лимит по времени</b>\n\n"
+        "Сколько времени после первого запроса покупатель сможет получать коды без ограничения по количеству?\n\n"
+        "Примеры: <code>30м</code>, <code>2ч</code>, <code>1д</code>. После окончания этого времени доступ к кодам закрывается.",
+    )
+
+
+def _handle_account_limit_mode_choice(cardinal: "Cardinal", call) -> None:
+    bot = cardinal.telegram.bot
+    parts = str(call.data).split(":")
+    choice = parts[-1] if parts else ""
+    if choice not in {"count", "time"}:
+        _answer(bot, call, "Неизвестный режим лимита.", True)
+        return
+    is_add = len(parts) >= 2 and parts[-2] == "add"
+    chat_id = call.message.chat.id
+
+    if is_add:
+        state = _fsm.get(chat_id)
+        if not state or state.get("mode") != "add_account" or state.get("step") != "limit_mode":
+            _answer(bot, call, "Этот шаг уже завершён.", True)
+            return
+        state.setdefault("data", {})["limit_mode"] = choice
+        _answer(bot, call, "Выбран лимит по количеству." if choice == "count" else "Выбран лимит по времени.")
+        if choice == "count":
+            _prompt_account_limit_count(bot, chat_id, state)
+        else:
+            _prompt_account_limit_time(bot, chat_id, state)
+        return
+
+    # edit callback format: ...:edit:<account_id>:<choice>
+    if len(parts) < 3:
+        _answer(bot, call, "Аккаунт не указан.", True)
+        return
+    account_id = parts[-2]
+    account = _find_account(account_id)
+    if account is None:
+        _answer(bot, call, "Аккаунт не найден.", True)
+        return
+    account["limit_mode"] = choice
+    account["limit_total"] = None
+    account["limit_reset_seconds"] = 0
+    account["limit_time_seconds"] = 0
+    _reset_account_usage(account_id)
+    _db_save()
+    _answer(bot, call, "Режим лимита изменён.")
+    if choice == "count":
+        _fsm_start(chat_id, "edit_account_limit_count", "value", call.message.id, entity_id=account_id)
+        _safe_edit(bot, chat_id, call.message.id, "🔢 <b>Количество кодов</b>\n\nОтправьте число от <code>1</code> и выше или <code>-</code> для безлимита.", _cancel_kb(CB_ACCOUNTS))
+    else:
+        _fsm_start(chat_id, "edit_account_limit_time", "value", call.message.id, entity_id=account_id)
+        _safe_edit(bot, chat_id, call.message.id, "⏱ <b>Время доступа</b>\n\nОтправьте срок, например <code>30м</code>, <code>2ч</code> или <code>1д</code>. В это время покупатель может получать коды без ограничения.", _cancel_kb(CB_ACCOUNTS))
 
 def _prompt_account_denuvo_choice(bot, chat_id: int, state: dict) -> None:
     if str(state.get("data", {}).get("type") or "") != "steam_sda":
@@ -4155,6 +4519,7 @@ def _prompt_account_denuvo_choice(bot, chat_id: int, state: dict) -> None:
         "Если включить, плагин будет учитывать этот аккаунт как Denuvo-слот и отправлять название игры в API при распределении.",
         _account_denuvo_choice_kb("add"),
     )
+
 
 def _finish_add_account(bot, chat_id: int, state: dict) -> None:
     data = state.setdefault("data", {})
@@ -4174,15 +4539,18 @@ def _finish_add_account(bot, chat_id: int, state: dict) -> None:
     }
     if denuvo_enabled:
         denuvo_cfg["game_id"] = str(data.get("denuvo_game") or "").strip()[:200]
+    default_name = "TOTP account" if account_type == "totp" else ("Steam Email" if account_type == "steam_email" else "Steam account")
     account = {
         "id": _uid("a"),
-        "name": str(data.get("name") or ("TOTP account" if account_type == "totp" else "Steam account"))[:100],
+        "name": str(data.get("name") or default_name)[:100],
         "type": account_type,
         "secret": str(data.get("secret") or ""),
         "data": data.get("account_data", {}) if isinstance(data.get("account_data"), dict) else {},
         "enabled": True,
+        "limit_mode": str(data.get("limit_mode") or "count"),
         "limit_total": data.get("limit_total"),
         "limit_reset_seconds": _safe_int(data.get("limit_reset_seconds"), 0, 0, 31_536_000),
+        "limit_time_seconds": _safe_int(data.get("limit_time_seconds"), 0, 0, 31_536_000),
         "cooldown_seconds": 0,
         "template": "",
         "issued": 0,
@@ -4198,14 +4566,8 @@ def _finish_add_account(bot, chat_id: int, state: dict) -> None:
     _fsm_cleanup(bot, chat_id, state)
     _fsm.pop(chat_id, None)
     _safe_edit(bot, chat_id, _safe_int(state.get("panel_msg_id"), 0), _account_text(account), _account_kb(account))
-    _log(
-        "SETTINGS",
-        "Аккаунт добавлен",
-        account_id=account["id"],
-        account_type=account["type"],
-        queue_enabled=queue_enabled,
-        denuvo_enabled=denuvo_enabled,
-    )
+    _log("SETTINGS", "Аккаунт добавлен", account_id=account["id"], account_type=account["type"], queue_enabled=queue_enabled, denuvo_enabled=denuvo_enabled)
+
 
 def _handle_account_queue_choice(cardinal: "Cardinal", call) -> None:
     bot = cardinal.telegram.bot
@@ -4217,7 +4579,7 @@ def _handle_account_queue_choice(cardinal: "Cardinal", call) -> None:
     enabled = str(call.data).rsplit(":", 1)[-1] == "y"
     state.setdefault("data", {})["queue_enabled"] = enabled
     _answer(bot, call, "Очередь включена." if enabled else "Очередь отключена.")
-    _prompt_account_limit_count(bot, chat_id, state)
+    _prompt_account_limit_mode(bot, chat_id, state)
 
 def _handle_account_denuvo_choice(cardinal: "Cardinal", call) -> None:
     bot = cardinal.telegram.bot
@@ -4319,6 +4681,7 @@ def _start_edit_account_denuvo(cardinal: "Cardinal", call) -> None:
     _safe_edit(cardinal.telegram.bot, call.message.chat.id, call.message.id, text, kb)
     _answer(cardinal.telegram.bot, call)
 
+
 def _start_edit_account_secret(cardinal: "Cardinal", call) -> None:
     account_id = str(call.data).split(":")[-1]
     account = _find_account(account_id)
@@ -4326,6 +4689,16 @@ def _start_edit_account_secret(cardinal: "Cardinal", call) -> None:
         _answer(cardinal.telegram.bot, call, "Аккаунт не найден.", True)
         return
     account_type = _canonical_account_type(account.get("type"))
+    if account_type == "steam_email":
+        _start_edit_text(
+            cardinal,
+            call,
+            "edit_account_mail",
+            account_id,
+            "📧 <b>Замена IMAP-данных Steam</b>\n\nОтправьте одной строкой <code>email:пароль</code>. Доступ будет проверен до сохранения. Поддерживаются только Steam Guard-коды для входа.\n\nСообщение удалится автоматически.",
+            CB_ACCOUNTS,
+        )
+        return
     if account_type == "steam_sda":
         prompt = (
             "🔐 <b>Замена Steam shared_secret</b>\n\n"
@@ -4343,31 +4716,47 @@ def _start_edit_account_secret(cardinal: "Cardinal", call) -> None:
         prompt = "🔐 Отправьте новые данные аккаунта. Сообщение удалится автоматически."
     _start_edit_text(cardinal, call, "edit_account_secret", account_id, prompt, CB_ACCOUNTS)
 
+
 def _account_limit_reset_label(account: dict) -> str:
+    if _account_limit_mode(account) == "time":
+        return "не используется"
     if account.get("limit_total") in (None, "", 0, "0"):
         return "не используется"
     reset_seconds = _safe_int(account.get("limit_reset_seconds"), 0)
     return _fmt_duration(reset_seconds) if reset_seconds > 0 else "не сбрасывается"
 
+
 def _account_limits_text(account: dict) -> str:
-    limit = "∞" if account.get("limit_total") in (None, "", 0, "0") else str(account.get("limit_total"))
+    mode = _account_limit_mode(account)
+    if mode == "time":
+        duration = _safe_int(account.get("limit_time_seconds"), 0)
+        details = f"• Режим: <b>по времени</b>\n• Время доступа: <b>{escape(_fmt_duration(duration) if duration > 0 else 'не задано')}</b>\n• Количество кодов: <b>без ограничений в течение срока</b>"
+    else:
+        limit = "∞" if account.get("limit_total") in (None, "", 0, "0") else str(account.get("limit_total"))
+        details = f"• Режим: <b>по количеству</b>\n• Количество кодов: <b>{escape(limit)}</b>\n• Сброс счётчика: <b>{escape(_account_limit_reset_label(account))}</b>"
     return (
         "📛 <b>Лимиты кодов</b>\n\n"
         f"Аккаунт: <b>{escape(str(account.get('name') or '—'))}</b>\n\n"
-        f"• Количество кодов: <b>{escape(limit)}</b>\n"
-        f"• Сброс лимита: <b>{escape(_account_limit_reset_label(account))}</b>\n\n"
-        "Эти настройки относятся только к Steam Guard/TOTP-кодам. "
-        "Denuvo-активация считается отдельно: один покупатель занимает один слот."
+        f"{details}\n\n"
+        "Режимы взаимоисключающие: при лимите по времени второй лимит/сброс не используется. Denuvo-активация считается отдельно."
     )
+
 
 def _account_limits_kb(account: dict) -> K:
     aid = str(account.get("id") or "")
-    limit = "∞" if account.get("limit_total") in (None, "", 0, "0") else str(account.get("limit_total"))
+    mode = _account_limit_mode(account)
     kb = K()
-    kb.row(B(f"🔢 Количество кодов · {limit}", callback_data=f"{CB_ACCOUNT_LIMIT_COUNT}:{aid}"))
-    kb.row(B(f"♻️ Сброс лимита · {_account_limit_reset_label(account)}", callback_data=f"{CB_ACCOUNT_LIMIT_RESET}:{aid}"))
+    kb.row(B(f"🔀 Режим · {'время' if mode == 'time' else 'количество'}", callback_data=f"{CB_ACCOUNT_LIMIT_MODE}:menu:{aid}"))
+    if mode == "time":
+        duration = _safe_int(account.get("limit_time_seconds"), 0)
+        kb.row(B(f"⏱ Время · {_fmt_duration(duration) if duration > 0 else 'не задано'}", callback_data=f"{CB_ACCOUNT_LIMIT_TIME}:{aid}"))
+    else:
+        limit = "∞" if account.get("limit_total") in (None, "", 0, "0") else str(account.get("limit_total"))
+        kb.row(B(f"🔢 Количество кодов · {limit}", callback_data=f"{CB_ACCOUNT_LIMIT_COUNT}:{aid}"))
+        kb.row(B(f"♻️ Сброс лимита · {_account_limit_reset_label(account)}", callback_data=f"{CB_ACCOUNT_LIMIT_RESET}:{aid}"))
     kb.row(B("◀️ К аккаунту", callback_data=f"{CB_ACCOUNT_OPEN}:{aid}"))
     return kb
+
 
 def _start_edit_account_limits(cardinal: "Cardinal", call) -> None:
     account_id = str(call.data).split(":")[-1]
@@ -4375,14 +4764,12 @@ def _start_edit_account_limits(cardinal: "Cardinal", call) -> None:
     if account is None:
         _answer(cardinal.telegram.bot, call, "Аккаунт не найден.", True)
         return
-    _safe_edit(
-        cardinal.telegram.bot,
-        call.message.chat.id,
-        call.message.id,
-        _account_limits_text(account),
-        _account_limits_kb(account),
-    )
+    if str(call.data).startswith(CB_ACCOUNT_LIMIT_MODE + ":menu:"):
+        _safe_edit(cardinal.telegram.bot, call.message.chat.id, call.message.id, "🔀 <b>Выберите режим лимита</b>\n\n1 — количество кодов.\n2 — ограниченное время с безлимитными запросами кодов.", _account_limit_mode_choice_kb("edit", account_id))
+    else:
+        _safe_edit(cardinal.telegram.bot, call.message.chat.id, call.message.id, _account_limits_text(account), _account_limits_kb(account))
     _answer(cardinal.telegram.bot, call)
+
 
 def _start_edit_account_limit_count(cardinal: "Cardinal", call) -> None:
     account_id = str(call.data).split(":")[-1]
@@ -4390,17 +4777,11 @@ def _start_edit_account_limit_count(cardinal: "Cardinal", call) -> None:
     if account is None:
         _answer(cardinal.telegram.bot, call, "Аккаунт не найден.", True)
         return
+    account["limit_mode"] = "count"
     _fsm_start(call.message.chat.id, "edit_account_limit_count", "value", call.message.id, entity_id=account_id)
-    _safe_edit(
-        cardinal.telegram.bot,
-        call.message.chat.id,
-        call.message.id,
-        "🔢 <b>Количество кодов</b>\n\n"
-        "Сколько Steam Guard/TOTP-кодов сможет получить покупатель?\n\n"
-        "Отправьте число от <code>1</code> и выше или <code>-</code> для безлимита.",
-        _cancel_kb(CB_ACCOUNTS),
-    )
+    _safe_edit(cardinal.telegram.bot, call.message.chat.id, call.message.id, "🔢 <b>Количество кодов</b>\n\nСколько Steam Guard/TOTP/Email-кодов сможет получить покупатель?\n\nОтправьте число от <code>1</code> и выше или <code>-</code> для безлимита.", _cancel_kb(CB_ACCOUNTS))
     _answer(cardinal.telegram.bot, call)
+
 
 def _start_edit_account_limit_reset(cardinal: "Cardinal", call) -> None:
     account_id = str(call.data).split(":")[-1]
@@ -4408,21 +4789,26 @@ def _start_edit_account_limit_reset(cardinal: "Cardinal", call) -> None:
     if account is None:
         _answer(cardinal.telegram.bot, call, "Аккаунт не найден.", True)
         return
+    if _account_limit_mode(account) != "count":
+        _answer(cardinal.telegram.bot, call, "В режиме лимита по времени сброс не используется.", True)
+        return
     if account.get("limit_total") in (None, "", 0, "0"):
         _answer(cardinal.telegram.bot, call, "Сначала задайте количество кодов.", True)
         return
     _fsm_start(call.message.chat.id, "edit_account_limit_reset", "value", call.message.id, entity_id=account_id)
-    _safe_edit(
-        cardinal.telegram.bot,
-        call.message.chat.id,
-        call.message.id,
-        "♻️ <b>Сброс лимита</b>\n\n"
-        f"Текущий лимит: <b>{_safe_int(account.get('limit_total'), 1)} кодов</b>.\n\n"
-        "Через какое время счётчик должен начинаться заново?\n"
-        "Примеры: <code>30с</code>, <code>10м</code>, <code>2ч</code>, <code>1д</code>.\n"
-        "Для лимита без сброса отправьте <code>-</code>.",
-        _cancel_kb(CB_ACCOUNTS),
-    )
+    _safe_edit(cardinal.telegram.bot, call.message.chat.id, call.message.id, "♻️ <b>Сброс лимита</b>\n\nЧерез какое время счётчик количества должен начинаться заново?\nПримеры: <code>30с</code>, <code>10м</code>, <code>2ч</code>, <code>1д</code>.\nДля лимита без сброса отправьте <code>-</code>.", _cancel_kb(CB_ACCOUNTS))
+    _answer(cardinal.telegram.bot, call)
+
+
+def _start_edit_account_limit_time(cardinal: "Cardinal", call) -> None:
+    account_id = str(call.data).split(":")[-1]
+    account = _find_account(account_id)
+    if account is None:
+        _answer(cardinal.telegram.bot, call, "Аккаунт не найден.", True)
+        return
+    account["limit_mode"] = "time"
+    _fsm_start(call.message.chat.id, "edit_account_limit_time", "value", call.message.id, entity_id=account_id)
+    _safe_edit(cardinal.telegram.bot, call.message.chat.id, call.message.id, "⏱ <b>Время доступа</b>\n\nУкажите срок, например <code>30м</code>, <code>2ч</code> или <code>1д</code>. В течение срока количество запросов не ограничено; после окончания доступ закрывается.", _cancel_kb(CB_ACCOUNTS))
     _answer(cardinal.telegram.bot, call)
 
 def _handle_fsm(message: Message, cardinal: "Cardinal") -> None:
@@ -4435,7 +4821,7 @@ def _handle_fsm(message: Message, cardinal: "Cardinal") -> None:
     document = getattr(message, "document", None)
     mode, step = state.get("mode"), state.get("step")
     if mode in {
-        "add_account", "add_lot", "edit_account_limit_count", "edit_account_limit_reset",
+        "add_account", "add_lot", "edit_account_limit_count", "edit_account_limit_reset", "edit_account_limit_time", "edit_account_mail",
         "edit_account_name", "edit_account_template", "edit_account_secret", "edit_account_denuvo_game",
         "edit_account_denuvo_limit",
     }:
@@ -4497,6 +4883,30 @@ def _handle_fsm(message: Message, cardinal: "Cardinal") -> None:
                 _safe_send_tg(bot, chat_id, "📥 Бэкап импортирован. Теперь разблокируйте его master-password.")
             return
         if mode == "add_account":
+            if step == "mail_email":
+                email_addr = text.strip().lower()
+                if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_addr):
+                    raise ValueError("Отправьте корректный email.")
+                _imap_servers_for_email(email_addr)
+                data["mail_email"] = email_addr
+                state["step"] = "mail_password"
+                _account_flow_edit(bot, chat_id, state, "🔑 <b>Пароль IMAP</b>\n\nОтправьте пароль от почтового ящика (или пароль приложения, если провайдер его требует). Доступ будет проверен сразу.")
+                return
+
+            if step == "mail_password":
+                if not text:
+                    raise ValueError("Пароль не может быть пустым.")
+                email_addr = str(data.get("mail_email") or "")
+                ok, host, err = _check_imap_credentials(email_addr, text)
+                if not ok:
+                    raise ValueError("Не удалось войти по IMAP: " + err)
+                data["secret"] = ""
+                data["account_data"] = {"email": email_addr, "mail_password": text, "imap_host": host, "imap_port": 993, "folder": "INBOX", "max_age_minutes": 20}
+                data["source"] = "imap"
+                state["step"] = "name"
+                _account_flow_edit(bot, chat_id, state, "🏷 <b>Название аккаунта</b>\n\nОтправьте понятное название, например <code>Steam Mail Main</code>.")
+                return
+
             if step == "secret":
                 account_type = str(data.get("type") or "")
                 if account_type not in ACCOUNT_CREATION_TYPES:
@@ -4543,7 +4953,12 @@ def _handle_fsm(message: Message, cardinal: "Cardinal") -> None:
                 _prompt_account_queue_choice(bot, chat_id, state)
                 return
 
+            if step == "limit_mode":
+                raise ValueError("Выберите тип лимита кнопкой ниже.")
+
             if step == "limit_count":
+                data["limit_mode"] = "count"
+                data["limit_time_seconds"] = 0
                 if text in {"-", "∞"}:
                     data["limit_total"] = None
                     data["limit_reset_seconds"] = 0
@@ -4567,6 +4982,14 @@ def _handle_fsm(message: Message, cardinal: "Cardinal") -> None:
 
             if step == "limit_reset":
                 data["limit_reset_seconds"] = 0 if text in {"-", "0", "∞"} else _parse_duration_input(text)
+                _prompt_account_denuvo_choice(bot, chat_id, state)
+                return
+
+            if step == "limit_time":
+                data["limit_mode"] = "time"
+                data["limit_total"] = None
+                data["limit_reset_seconds"] = 0
+                data["limit_time_seconds"] = _parse_duration_input(text)
                 _prompt_account_denuvo_choice(bot, chat_id, state)
                 return
 
@@ -4650,6 +5073,9 @@ def _handle_fsm(message: Message, cardinal: "Cardinal") -> None:
                 account["limit_total"] = limit
                 account.setdefault("limit_reset_seconds", 0)
                 account["cooldown_seconds"] = 0
+            account["limit_mode"] = "count"
+            account["limit_time_seconds"] = 0
+            _reset_account_usage(account.get("id"))
             _db_save()
             _fsm_cleanup(bot, chat_id, state)
             _fsm.pop(chat_id, None)
@@ -4663,12 +5089,28 @@ def _handle_fsm(message: Message, cardinal: "Cardinal") -> None:
                 raise ValueError("Сначала задайте количество кодов.")
             account["limit_reset_seconds"] = 0 if text in {"-", "0", "∞"} else _parse_duration_input(text)
             account["cooldown_seconds"] = 0
+            _reset_account_usage(account.get("id"))
             _db_save()
             _fsm_cleanup(bot, chat_id, state)
             _fsm.pop(chat_id, None)
             _safe_edit(bot, chat_id, panel_msg_id, _account_limits_text(account), _account_limits_kb(account))
             return
-        if mode in {"edit_account_name", "edit_account_template", "edit_account_secret", "edit_account_denuvo_game", "edit_account_denuvo_limit", "plugin_update_local"}:
+        if mode == "edit_account_limit_time":
+            account = _find_account(str(data.get("entity_id") or ""))
+            if account is None:
+                raise ValueError("Аккаунт не найден.")
+            account["limit_mode"] = "time"
+            account["limit_total"] = None
+            account["limit_reset_seconds"] = 0
+            account["limit_time_seconds"] = _parse_duration_input(text)
+            account["cooldown_seconds"] = 0
+            _reset_account_usage(account.get("id"))
+            _db_save()
+            _fsm_cleanup(bot, chat_id, state)
+            _fsm.pop(chat_id, None)
+            _safe_edit(bot, chat_id, panel_msg_id, _account_limits_text(account), _account_limits_kb(account))
+            return
+        if mode in {"edit_account_name", "edit_account_template", "edit_account_secret", "edit_account_mail", "edit_account_denuvo_game", "edit_account_denuvo_limit", "plugin_update_local"}:
             entity_id = str(data.get("entity_id") or "")
             if mode.startswith("edit_account"):
                 account = _find_account(entity_id)
@@ -4704,6 +5146,29 @@ def _handle_fsm(message: Message, cardinal: "Cardinal") -> None:
                     denuvo = account.setdefault("denuvo", {})
                     denuvo["slot_limit"] = min(limit, 10000)
                     denuvo["slot_limit_custom"] = True
+                elif mode == "edit_account_mail":
+                    state.setdefault("sensitive_messages", []).append(message.message_id)
+                    if ":" not in text:
+                        raise ValueError("Формат: email:пароль")
+                    email_addr, password = text.split(":", 1)
+                    email_addr = email_addr.strip().lower()
+                    password = password.strip()
+                    if not email_addr or not password:
+                        raise ValueError("Формат: email:пароль")
+                    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_addr):
+                        raise ValueError("Некорректный email.")
+                    ok, host, err = _check_imap_credentials(email_addr, password)
+                    if not ok:
+                        raise ValueError("Не удалось войти по IMAP: " + err)
+                    account["secret"] = ""
+                    account["data"] = {
+                        "email": email_addr,
+                        "mail_password": password,
+                        "imap_host": host,
+                        "imap_port": 993,
+                        "folder": "INBOX",
+                        "max_age_minutes": 20,
+                    }
                 else:
                     state.setdefault("sensitive_messages", []).append(message.message_id)
                     if account.get("type") == "steam_sda":
@@ -5064,17 +5529,53 @@ def _delete_plugin_confirm(cardinal: "Cardinal", call) -> None:
     _answer(cardinal.telegram.bot, call)
     _safe_edit(cardinal.telegram.bot, call.message.chat.id, call.message.id, _delete_plugin_text(), _delete_plugin_kb())
 
+
 def _delete_plugin(cardinal: "Cardinal", call) -> None:
     bot = cardinal.telegram.bot
-    path = _plugin_self_path()
-    try:
-        if os.path.isfile(path):
-            os.remove(path)
-        _answer(bot, call, "Плагин удалён.")
-        _safe_edit(bot, call.message.chat.id, call.message.id, "🗑 <b>Плагин удалён</b>\n\nТекущий файл удалён. Перезапустите Cardinal.", _home_kb())
-    except Exception as e:
-        _answer(bot, call, "Не удалось удалить", True)
-        _safe_send_tg(bot, call.message.chat.id, f"❌ Не удалось удалить плагин: {escape(str(e))}")
+    _answer(bot, call)
+    ok = False
+    err = None
+    candidates = [
+        (cardinal, "delete_plugin"),
+        (cardinal, "remove_plugin"),
+        (cardinal, "uninstall_plugin"),
+        (cardinal, "unload_plugin"),
+        (getattr(cardinal, "plugins", None), "delete_plugin"),
+        (getattr(cardinal, "plugins", None), "remove_plugin"),
+        (getattr(cardinal, "plugin_manager", None), "delete_plugin"),
+        (getattr(cardinal, "plugin_manager", None), "remove_plugin"),
+        (getattr(cardinal, "plugin_manager", None), "unload_plugin"),
+    ]
+    for obj, method in candidates:
+        try:
+            if obj is None:
+                continue
+            fn = getattr(obj, method, None)
+            if callable(fn):
+                fn(UUID)
+                ok = True
+                break
+        except Exception as e:
+            err = e
+
+    if not ok:
+        try:
+            path = _plugin_self_path()
+            if os.path.isfile(path):
+                os.remove(path)
+                _cleanup_plugin_bytecode(path)
+                ok = True
+        except Exception as e:
+            err = e
+
+    if ok:
+        try:
+            _safe_edit(bot, call.message.chat.id, call.message.id, "✅ <b>Плагин удалён.</b>\n\nДанные AutoOffline сохранены. Если пункт ещё виден в меню — перезапустите Cardinal.", K())
+        except Exception:
+            pass
+        return
+
+    _safe_edit(bot, call.message.chat.id, call.message.id, "❌ <b>Не удалось удалить плагин автоматически.</b>\n\nУдалите его через Cardinal → Плагины.\n\nОшибка: <code>" + escape(str(err) if err else "—") + "</code>", _home_kb())
 
 def _open_account(cardinal: "Cardinal", call) -> None:
     account = _find_account(str(call.data).split(":")[-1])
@@ -5408,7 +5909,7 @@ def _logs_html(entries: List[dict]) -> bytes:
     body = "".join(cards) or '<div class="empty">Лог пока пуст.</div>'
     document = f'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AutoOffline — логи</title><style>
+<title>AutoOffline — лицензионные логи</title><style>
 :root{{--bg:#0b1020;--card:#141b2d;--text:#eef2ff;--muted:#94a3b8;--line:#27324a;--info:#38bdf8;--success:#4ade80;--warning:#facc15;--danger:#fb7185}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,Segoe UI,Arial,sans-serif}}
 main{{max-width:1100px;margin:auto;padding:28px 18px}}h1{{margin:0 0 4px;font-size:26px}}.sub{{color:var(--muted);margin-bottom:22px}}
@@ -5417,19 +5918,34 @@ main{{max-width:1100px;margin:auto;padding:28px 18px}}h1{{margin:0 0 4px;font-si
 .head{{display:flex;justify-content:space-between;gap:12px;align-items:center}}.badge{{font-weight:800;letter-spacing:.03em}}time{{color:var(--muted);white-space:nowrap}}
 .message{{font-size:16px;font-weight:650;margin:8px 0 10px}}.details{{display:flex;flex-wrap:wrap;gap:7px}}
 .details span{{background:#0d1425;border:1px solid var(--line);border-radius:8px;padding:5px 8px;color:#cbd5e1}}code{{color:#e2e8f0}}.muted,.empty{{color:var(--muted)}}
-</style></head><body><main><h1>AutoOffline — цветные логи</h1><div class="sub">Сформировано: {escape(_fmt_dt(_now()))} · секреты скрыты</div>{body}</main></body></html>'''
+</style></head><body><main><h1>AutoOffline — цветные логи лицензии / API</h1><div class="sub">Сформировано: {escape(_fmt_dt(_now()))} · секреты скрыты</div>{body}</main></body></html>'''
     return document.encode("utf-8")
+
 
 def _send_logs(cardinal: "Cardinal", call) -> None:
     bot = cardinal.telegram.bot
-    if _db_locked():
-        _answer(bot, call, "База заблокирована.", True)
-        return
-    entries = list(_db_get().get("logs", []))
-    payload = _logs_html(entries)
-    filename = f"AutoOffline-logs-{time.strftime('%Y%m%d-%H%M%S')}.html"
-    bot.send_document(call.message.chat.id, (filename, payload), caption="🎨 Цветные логи AutoOffline. Секреты скрыты.")
-    _answer(bot, call, "Цветные логи отправлены.")
+    sent_any = False
+    try:
+        if os.path.isfile(TEXT_LOG_FILE):
+            raw = open(TEXT_LOG_FILE, "rb").read()
+        else:
+            raw = b""
+        bot.send_document(call.message.chat.id, ("log.txt", raw), caption="📄 Рабочий log.txt: выдачи кодов, заказы, лимиты, настройки и ошибки плагина.")
+        sent_any = True
+    except Exception as e:
+        logger.warning("%s text log send failed: %s", PREFIX, e)
+
+    if not _db_locked():
+        try:
+            entries = [item for item in _db_get().get("logs", []) if _is_colored_license_event(str(item.get("type") or ""), str(item.get("message") or ""))]
+            payload = _logs_html(entries)
+            filename = f"AutoOffline-license-logs-{time.strftime('%Y%m%d-%H%M%S')}.html"
+            bot.send_document(call.message.chat.id, (filename, payload), caption="🎨 Цветные логи: лицензия, регистрация и сервер AutoOffline. Секреты скрыты.")
+            sent_any = True
+        except Exception as e:
+            logger.warning("%s colored log send failed: %s", PREFIX, e)
+
+    _answer(bot, call, "Логи отправлены." if sent_any else "Не удалось отправить логи.", not sent_any)
 
 def _send_backup(cardinal: "Cardinal", call) -> None:
     bot = cardinal.telegram.bot
@@ -5582,8 +6098,10 @@ def init_cardinal(cardinal: "Cardinal") -> None:
     tg.cbq_handler(lambda c: _start_add_account(cardinal, c), func=lambda c: c.data == CB_ACCOUNT_ADD)
     tg.cbq_handler(lambda c: _open_account(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_OPEN + ":"))
     tg.cbq_handler(lambda c: _toggle_account(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_TOGGLE + ":"))
-    tg.cbq_handler(lambda c: _start_edit_account_limits(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_LIMITS + ":"))
+    tg.cbq_handler(lambda c: _start_edit_account_limits(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_LIMITS + ":") or c.data.startswith(CB_ACCOUNT_LIMIT_MODE + ":menu:"))
+    tg.cbq_handler(lambda c: _handle_account_limit_mode_choice(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_LIMIT_MODE + ":add:") or c.data.startswith(CB_ACCOUNT_LIMIT_MODE + ":edit:"))
     tg.cbq_handler(lambda c: _start_edit_account_limit_count(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_LIMIT_COUNT + ":"))
+    tg.cbq_handler(lambda c: _start_edit_account_limit_time(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_LIMIT_TIME + ":"))
     tg.cbq_handler(lambda c: _start_edit_account_limit_reset(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_LIMIT_RESET + ":"))
     tg.cbq_handler(lambda c: _start_edit_account_denuvo(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_DENUVO + ":"))
     tg.cbq_handler(lambda c: _toggle_account_queue(cardinal, c), func=lambda c: c.data.startswith(CB_ACCOUNT_QUEUE + ":"))
