@@ -105,6 +105,7 @@ PLUGIN_FOLDER = 'storage/plugins/AutoOffline'
 DB_FILE = os.path.join(PLUGIN_FOLDER, 'database.json')
 DB_BACKUP_FILE = DB_FILE + '.bak'
 LOCAL_KEY_FILE = os.path.join(PLUGIN_FOLDER, '.local.key')
+LOCAL_KEY_BACKUP_FILE = LOCAL_KEY_FILE + '.bak'
 NOTIFY_LOG_FILE = os.path.join(PLUGIN_FOLDER, 'runtime.log')
 TEXT_LOG_FILE = os.path.join(PLUGIN_FOLDER, 'log.txt')
 os.makedirs(PLUGIN_FOLDER, exist_ok=True)
@@ -398,7 +399,7 @@ def _redact(data: Any) -> Any:
  return data
 
 def _default_db() -> dict:
- return {'schema': DB_VERSION, 'global': {'plugin_enabled': True, 'admin_chat_ids': [], 'instruction_acknowledged': [], 'smakmail_api_key': os.getenv('AUTOOFFLINE_SMAKMAIL_API_KEY', '').strip(), 'notifications': {key: True for key in NOTIFICATION_LABELS}, 'server': {'url': DEFAULT_SERVER_URL, 'token': os.getenv('AUTOOFFLINE_SERVER_TOKEN', '').strip(), 'license_key': os.getenv('AUTOOFFLINE_LICENSE_KEY', '').strip(), 'license_type': 'manual' if os.getenv('AUTOOFFLINE_LICENSE_KEY', '').strip() else 'auto', 'cardinal_id_hash': '', 'owner_id': os.getenv('AUTOOFFLINE_OWNER_ID', '').strip(), 'seller_hash': os.getenv('AUTOOFFLINE_SELLER_HASH', '').strip().lower(), 'timeout': 15, 'fallback_local': False, 'install_id': '', 'machine_seed': '', 'installation_secret': '', 'installation_id': '', 'registered_build_hash': '', 'registered_owner_id': '', 'protocol_version': 1, 'data_binding_mode': 'off', 'clock_offset': 0, 'last_register_at': 0, 'last_verify_at': 0, 'last_verify_code': 'NOT_CONFIGURED', 'last_status_sync': 0, 'active_reservations': 0, 'queue_max_attempts': 9, 'queue_retry_base': 5, 'queue_max_wait': 1800, 'denuvo_hold_seconds': _safe_int(os.getenv('AUTOOFFLINE_DENUVO_HOLD_SECONDS'), 21600, 300, 604800), 'status_sync_interval': 300}, 'templates': {'steam_sda': '🔐 Код Steam Guard\n\n【 {code} 】\n\n📋 Скопируйте код и вставьте его в Steam.\n📊 Осталось запросов: {left}/{total}', 'steam_email': '📧 Код Steam Guard из почты\n\n【 {code} 】\n\n📋 Код подходит только для входа в Steam.\n📊 Осталось запросов: {left}/{total}', 'totp': '🔐 Код подтверждения\n\n【 {code} 】\n\n📊 Осталось запросов: {left}/{total}', 'rockstar_email': '🔐 Код Rockstar\n\n【 {code} 】\n\n📊 Осталось запросов: {left}/{total}', 'denuvo': '✅ Denuvo-доступ выдан\n\nАккаунт: {account}\nАктивации: {slot_info}', 'denuvo_queued': '🕒 Denuvo-запрос принят. Позиция в очереди: <b>{position}</b>. Повторять команду не нужно.', 'denuvo_duplicate': '🕒 Этот Denuvo-запрос уже обрабатывается. Позиция: <b>{position}</b>.', 'steam_queued': '🕒 Запрос Steam Guard поставлен в очередь. Позиция: <b>{position}</b>. Следующий код будет выдан не раньше чем через 15 секунд.', 'steam_duplicate': '🕒 Ваш запрос Steam Guard уже находится в очереди. Позиция: <b>{position}</b>.', 'totp_queued': '🕒 Запрос TOTP поставлен в очередь. Позиция: <b>{position}</b>. Новый код будет выдан в следующем 30-секундном окне.', 'totp_duplicate': '🕒 Такой TOTP-запрос уже находится в очереди. Позиция: <b>{position}</b>.', 'denied_no_order': '❌ Не найден подходящий оплаченный заказ для этого лота.', 'denied_limit': '❌ Лимит по заказу исчерпан.', 'denied_cooldown': '⏳ Повторный запрос будет доступен через {wait}.', 'unavailable': '❌ Автоматическая выдача временно недоступна. Напишите продавцу.'}}, 'accounts': [], 'lots': [], 'orders': [], 'usage': {}, 'denuvo_queue': [], 'steam_queue': [], 'logs': [], 'stats': {'orders': 0, 'issued': 0, 'denied': 0, 'server_requests': 0, 'server_errors': 0, 'queue_enqueued': 0, 'queue_enqueued_messages': 0, 'queue_completed': 0, 'queue_failed': 0, 'steam_queue_enqueued': 0, 'steam_queue_completed': 0, 'steam_queue_failed': 0}}
+ return {'schema': DB_VERSION, 'global': {'plugin_enabled': True, 'admin_chat_ids': [], 'instruction_acknowledged': [], 'smakmail_api_key': os.getenv('AUTOOFFLINE_SMAKMAIL_API_KEY', '').strip(), 'notifications': {key: True for key in NOTIFICATION_LABELS}, 'server': {'url': DEFAULT_SERVER_URL, 'plugin_update_url': PLUGIN_UPDATE_URL, 'token': os.getenv('AUTOOFFLINE_SERVER_TOKEN', '').strip(), 'license_key': os.getenv('AUTOOFFLINE_LICENSE_KEY', '').strip(), 'license_type': 'manual' if os.getenv('AUTOOFFLINE_LICENSE_KEY', '').strip() else 'auto', 'cardinal_id_hash': '', 'owner_id': os.getenv('AUTOOFFLINE_OWNER_ID', '').strip(), 'seller_hash': os.getenv('AUTOOFFLINE_SELLER_HASH', '').strip().lower(), 'timeout': 15, 'fallback_local': False, 'install_id': '', 'machine_seed': '', 'installation_secret': '', 'installation_id': '', 'registered_build_hash': '', 'registered_owner_id': '', 'protocol_version': 1, 'data_binding_mode': 'off', 'clock_offset': 0, 'last_register_at': 0, 'last_verify_at': 0, 'last_verify_code': 'NOT_CONFIGURED', 'last_status_sync': 0, 'active_reservations': 0, 'queue_max_attempts': 9, 'queue_retry_base': 5, 'queue_max_wait': 1800, 'denuvo_hold_seconds': _safe_int(os.getenv('AUTOOFFLINE_DENUVO_HOLD_SECONDS'), 21600, 300, 604800), 'status_sync_interval': 300}, 'templates': {'steam_sda': '🔐 Код Steam Guard\n\n【 {code} 】\n\n📋 Скопируйте код и вставьте его в Steam.\n📊 Осталось запросов: {left}/{total}', 'steam_email': '📧 Код Steam Guard из почты\n\n【 {code} 】\n\n📋 Код подходит только для входа в Steam.\n📊 Осталось запросов: {left}/{total}', 'totp': '🔐 Код подтверждения\n\n【 {code} 】\n\n📊 Осталось запросов: {left}/{total}', 'rockstar_email': '🔐 Код Rockstar\n\n【 {code} 】\n\n📊 Осталось запросов: {left}/{total}', 'denuvo': '✅ Denuvo-доступ выдан\n\nАккаунт: {account}\nАктивации: {slot_info}', 'denuvo_queued': '🕒 Denuvo-запрос принят. Позиция в очереди: <b>{position}</b>. Повторять команду не нужно.', 'denuvo_duplicate': '🕒 Этот Denuvo-запрос уже обрабатывается. Позиция: <b>{position}</b>.', 'steam_queued': '🕒 Запрос Steam Guard поставлен в очередь. Позиция: <b>{position}</b>. Следующий код будет выдан не раньше чем через 15 секунд.', 'steam_duplicate': '🕒 Ваш запрос Steam Guard уже находится в очереди. Позиция: <b>{position}</b>.', 'totp_queued': '🕒 Запрос TOTP поставлен в очередь. Позиция: <b>{position}</b>. Новый код будет выдан в следующем 30-секундном окне.', 'totp_duplicate': '🕒 Такой TOTP-запрос уже находится в очереди. Позиция: <b>{position}</b>.', 'denied_no_order': '❌ Не найден подходящий оплаченный заказ для этого лота.', 'denied_limit': '❌ Лимит по заказу исчерпан.', 'denied_cooldown': '⏳ Повторный запрос будет доступен через {wait}.', 'unavailable': '❌ Автоматическая выдача временно недоступна. Напишите продавцу.'}}, 'accounts': [], 'lots': [], 'orders': [], 'usage': {}, 'denuvo_queue': [], 'steam_queue': [], 'logs': [], 'stats': {'orders': 0, 'issued': 0, 'denied': 0, 'server_requests': 0, 'server_errors': 0, 'queue_enqueued': 0, 'queue_enqueued_messages': 0, 'queue_completed': 0, 'queue_failed': 0, 'steam_queue_enqueued': 0, 'steam_queue_completed': 0, 'steam_queue_failed': 0}}
 
 def _ensure_db_shape(db: dict) -> dict:
  base = _default_db()
@@ -517,25 +518,52 @@ def _require_crypto() -> None:
  if Fernet is None:
   raise RuntimeError('Не установлен пакет cryptography. Выполните: pip install cryptography')
 
-def _local_key() -> bytes:
- _require_crypto()
- if os.path.isfile(LOCAL_KEY_FILE):
-  raw = open(LOCAL_KEY_FILE, 'rb').read().strip()
-  try:
-   decoded = base64.urlsafe_b64decode(raw)
-  except Exception as e:
-   raise RuntimeError('Повреждён локальный ключ AutoOffline.') from e
-  if len(decoded) != 32:
-   raise RuntimeError('Некорректная длина локального ключа AutoOffline.')
-  return base64.urlsafe_b64encode(decoded)
- raw_key = secrets.token_bytes(32)
- encoded = base64.urlsafe_b64encode(raw_key)
- _atomic_write(LOCAL_KEY_FILE, encoded)
+def _read_local_key_file(path: str) -> Optional[bytes]:
+ if not os.path.isfile(path):
+  return None
  try:
-  os.chmod(LOCAL_KEY_FILE, 384)
+  raw = open(path, 'rb').read().strip()
+  decoded = base64.urlsafe_b64decode(raw)
+  if len(decoded) != 32:
+   return None
+  return base64.urlsafe_b64encode(decoded)
+ except Exception:
+  return None
+
+def _write_local_key(key: bytes) -> bytes:
+ encoded = base64.urlsafe_b64encode(base64.urlsafe_b64decode(key))
+ _atomic_write(LOCAL_KEY_FILE, encoded)
+ _atomic_write(LOCAL_KEY_BACKUP_FILE, encoded)
+ return encoded
+
+def _quarantine_local_key() -> None:
+ if not os.path.isfile(LOCAL_KEY_FILE):
+  return
+ stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+ target = f'{LOCAL_KEY_FILE}.corrupt.{stamp}.{uuidlib.uuid4().hex[:6]}'
+ try:
+  shutil.copy2(LOCAL_KEY_FILE, target)
  except Exception:
   pass
- return base64.urlsafe_b64encode(raw_key)
+
+def _local_key() -> bytes:
+ _require_crypto()
+ key = _read_local_key_file(LOCAL_KEY_FILE)
+ if key is not None:
+  if _read_local_key_file(LOCAL_KEY_BACKUP_FILE) != key:
+   try:
+    _atomic_write(LOCAL_KEY_BACKUP_FILE, key)
+   except Exception:
+    pass
+  return key
+ backup_key = _read_local_key_file(LOCAL_KEY_BACKUP_FILE)
+ if backup_key is not None:
+  _quarantine_local_key()
+  _atomic_write(LOCAL_KEY_FILE, backup_key)
+  return backup_key
+ _quarantine_local_key()
+ raw_key = secrets.token_bytes(32)
+ return _write_local_key(base64.urlsafe_b64encode(raw_key))
 
 def _password_key(password: str, salt: bytes, iterations: int=PBKDF2_ITERATIONS) -> bytes:
  _require_crypto()
@@ -697,16 +725,37 @@ def _auto_unlock_local() -> bool:
   except Exception as e:
    logger.error('%s Повреждение зашифрованной базы обнаружено: %s', PREFIX, e)
    _quarantine_database()
-   if not _restore_database_backup(require_local_decrypt=True):
-    raise RuntimeError('База повреждена, а пригодная резервная копия не найдена. Повреждённый файл сохранён отдельно.') from e
-   envelope = _read_envelope()
-   _DB_CACHE = _decrypt_envelope(envelope, key)
-   logger.warning('%s База автоматически восстановлена из резервной копии.', PREFIX)
+   if _restore_database_backup(require_local_decrypt=True):
+    envelope = _read_envelope()
+    _DB_CACHE = _decrypt_envelope(envelope, key)
+    logger.warning('%s База автоматически восстановлена из резервной копии.', PREFIX)
+   else:
+    _replace_with_fresh_database()
+    logger.warning('%s База автоматически пересоздана после повреждения.', PREFIX)
+    return True
   _DB_KEY = key
   _DB_MODE = 'local'
   _ensure_db_shape(_DB_CACHE)
   _db_save()
   return True
+
+def _ensure_database_available() -> bool:
+ try:
+  _initialise_database()
+  if _auto_unlock_local():
+   return not _db_locked()
+ except Exception as e:
+  logger.error('%s Автовосстановление базы при запуске не удалось: %s', PREFIX, e)
+ try:
+  envelope = _read_envelope()
+  mode = str((envelope.get('kdf') or {}).get('mode') or '') if envelope else ''
+  if mode and mode != 'local':
+   return False
+  _replace_with_fresh_database()
+  return not _db_locked()
+ except Exception as e:
+  logger.error('%s Не удалось автоматически пересоздать хранилище: %s', PREFIX, e)
+  return False
 
 def _unlock_password(password: str) -> bool:
  global _DB_CACHE, _DB_KEY, _DB_MODE
@@ -769,6 +818,8 @@ def _switch_to_local_key() -> None:
 
 def _database_status() -> Tuple[str, str]:
  try:
+  if not os.path.isfile(DB_FILE) or _db_locked():
+   _ensure_database_available()
   envelope = _read_envelope()
   if envelope is None:
    return ('не создана', 'unknown')
@@ -1959,6 +2010,9 @@ def _apply_server_config(cfg: dict) -> None:
    server['installation_secret'] = ''
    server['installation_id'] = ''
   server['url'] = new_url
+ update_url = str(cfg.get('plugin_update_url') or cfg.get('update_url') or cfg.get('download_url') or '').strip()
+ if update_url:
+  server['plugin_update_url'] = update_url
  if str(cfg.get('license_key') or '').strip():
   server['license_key'] = str(cfg.get('license_key')).strip()
   server['installation_secret'] = ''
@@ -3142,6 +3196,8 @@ def _home_kb() -> K:
  return kb
 
 def _settings_text() -> str:
+ if _db_locked():
+  _ensure_database_available()
  if _db_locked():
   return _locked_text()
  db = _db_get()
@@ -4613,32 +4669,165 @@ def _install_plugin_payload(payload: bytes, origin: str='файла') -> dict:
    pass
  return result
 
+def _plugin_update_candidate_urls() -> List[str]:
+ urls = []
+ def add(value: Any) -> None:
+  value = str(value or '').strip()
+  if value and value.casefold().startswith('https://') and value not in urls:
+   urls.append(value)
+ add(PLUGIN_UPDATE_URL)
+ base_url = DEFAULT_SERVER_URL
+ if not _db_locked():
+  try:
+   server = _server_cfg()
+   add(server.get('plugin_update_url'))
+   base_url = str(server.get('url') or DEFAULT_SERVER_URL).strip().rstrip('/')
+  except Exception:
+   base_url = DEFAULT_SERVER_URL
+ base_url = str(base_url or '').strip().rstrip('/')
+ if base_url.casefold().startswith('https://'):
+  query = urlencode({'uuid': UUID, 'name': NAME, 'version': VERSION})
+  for path in (f'/api/v1/plugin/update?{query}', f'/api/v1/plugin/latest?{query}', f'/api/v1/plugin/download?{query}', f'/api/plugin/update?{query}', f'/plugins/{quote(NAME)}.py', f'/{quote(NAME)}.py'):
+   add(base_url + path)
+ return urls
+
+def _plugin_update_json_info(payload: bytes) -> Tuple[Optional[bytes], Optional[str], Optional[str], Optional[bool]]:
+ raw = bytes(payload or b'').lstrip()
+ if not raw.startswith((b'{', b'[')):
+  return (None, None, None, None)
+ try:
+  data = json.loads(raw.decode('utf-8-sig'))
+ except Exception:
+  return (None, None, None, None)
+ if not isinstance(data, dict):
+  return (None, None, None, None)
+ nested = data.get('data')
+ if isinstance(nested, dict):
+  merged = dict(data)
+  merged.update(nested)
+  data = merged
+ remote_version = str(data.get('latest_version') or data.get('remote_version') or data.get('version') or '').strip() or None
+ update_available = data.get('update_available')
+ if update_available is None and 'has_update' in data:
+  update_available = data.get('has_update')
+ if update_available is not None:
+  update_available = bool(update_available)
+ for key in ('source', 'plugin_source', 'content', 'python'):
+  value = data.get(key)
+  if isinstance(value, str) and value.strip():
+   return (value.encode('utf-8'), remote_version, None, update_available)
+ for key in ('content_base64', 'payload_base64', 'source_base64'):
+  value = data.get(key)
+  if isinstance(value, str) and value.strip():
+   try:
+    return (base64.b64decode(value), remote_version, None, update_available)
+   except Exception:
+    pass
+ download_url = ''
+ for key in ('plugin_update_url', 'download_url', 'file_url', 'raw_url', 'update_url'):
+  value = str(data.get(key) or '').strip()
+  if value:
+   download_url = value
+   break
+ if not download_url:
+  value = str(data.get('url') or '').strip()
+  if value.casefold().startswith('https://') and (value.casefold().endswith('.py') or 'download' in value.casefold() or 'update' in value.casefold()):
+   download_url = value
+ return (None, remote_version, download_url or None, update_available)
+
+def _fetch_plugin_update_candidate(url: str) -> Tuple[Optional[bytes], Optional[str], Optional[bool]]:
+ request = urllib.request.Request(url, headers={'Accept': 'text/plain, application/octet-stream, application/json, */*', 'User-Agent': f'{NAME}/{VERSION} self-updater', 'Cache-Control': 'no-cache'})
+ with urllib.request.urlopen(request, timeout=45) as response:
+  payload = response.read(5 * 1024 * 1024 + 1)
+ embedded, remote_version, redirect_url, update_available = _plugin_update_json_info(payload)
+ if embedded is not None:
+  return (embedded, remote_version, update_available)
+ if redirect_url:
+  if not redirect_url.casefold().startswith('https://'):
+   raise RuntimeError('сервер обновлений вернул небезопасную ссылку')
+  request = urllib.request.Request(redirect_url, headers={'Accept': 'text/plain, application/octet-stream, */*', 'User-Agent': f'{NAME}/{VERSION} self-updater', 'Cache-Control': 'no-cache'})
+  with urllib.request.urlopen(request, timeout=45) as response:
+   return (response.read(5 * 1024 * 1024 + 1), remote_version, update_available)
+ if payload.lstrip().startswith((b'{', b'[')):
+  return (None, remote_version, update_available)
+ return (payload, remote_version, update_available)
+
 def _download_online_plugin_update() -> dict:
  pending_file = _pending_update_file()
  result = {'ok': False, 'changed': False, 'current_version': VERSION, 'remote_version': None, 'pending_file': pending_file, 'error': None}
+ errors = []
  try:
-  if not PLUGIN_UPDATE_URL:
-   raise RuntimeError('AUTOOFFLINE_PLUGIN_UPDATE_URL не задан')
-  if not PLUGIN_UPDATE_URL.casefold().startswith('https://'):
-   raise RuntimeError('ссылка обновления должна использовать HTTPS')
-  request = urllib.request.Request(PLUGIN_UPDATE_URL, headers={'Accept': 'text/plain, application/octet-stream, */*', 'User-Agent': f'{NAME}/{VERSION} self-updater', 'Cache-Control': 'no-cache'})
-  with urllib.request.urlopen(request, timeout=45) as response:
-   payload = response.read(5 * 1024 * 1024 + 1)
-  _, remote_version, _ = _validate_plugin_update_payload(payload)
-  result['remote_version'] = remote_version
-  if _plugin_version_key(remote_version) <= _plugin_version_key(VERSION):
+  candidates = _plugin_update_candidate_urls()
+  if not _db_locked():
    try:
-    if os.path.exists(pending_file):
-     os.remove(pending_file)
-   except Exception:
-    pass
-   result.update(ok=True, changed=False)
-   return result
-  with open(pending_file, 'wb') as file:
-   file.write(payload)
-   file.flush()
-   os.fsync(file.fileno())
-  result.update(ok=True, changed=True)
+    ok, data, code = _server_signed_post('api/v1/plugin/update', {'current_version': VERSION})
+    if ok and isinstance(data, dict):
+     embedded, announced_version, redirect_url, update_available = _plugin_update_json_info(_stable_json(data).encode('utf-8'))
+     if redirect_url and redirect_url.casefold().startswith('https://') and redirect_url not in candidates:
+      candidates.insert(0, redirect_url)
+     if embedded is not None:
+      _, remote_version, _ = _validate_plugin_update_payload(embedded)
+      result['remote_version'] = remote_version
+      if _plugin_version_key(remote_version) <= _plugin_version_key(VERSION):
+       result.update(ok=True, changed=False)
+       return result
+      with open(pending_file, 'wb') as file:
+       file.write(embedded)
+       file.flush()
+       os.fsync(file.fileno())
+      result.update(ok=True, changed=True)
+      return result
+     if announced_version and (_plugin_version_key(announced_version) <= _plugin_version_key(VERSION) or update_available is False):
+      result.update(ok=True, changed=False, remote_version=announced_version)
+      return result
+    elif code not in {'HTTP_404', 'HTTP_405', 'NOT_FOUND', 'METHOD_NOT_ALLOWED'}:
+     errors.append('api/v1/plugin/update: ' + str(code))
+   except Exception as error:
+    errors.append('api/v1/plugin/update: ' + str(error))
+  if not candidates:
+   raise RuntimeError('не удалось определить адрес сервера обновлений')
+  for update_url in candidates:
+   try:
+    payload, announced_version, update_available = _fetch_plugin_update_candidate(update_url)
+    if payload is None:
+     if announced_version and (_plugin_version_key(announced_version) <= _plugin_version_key(VERSION) or update_available is False):
+      try:
+       if os.path.exists(pending_file):
+        os.remove(pending_file)
+      except Exception:
+       pass
+      result.update(ok=True, changed=False, remote_version=announced_version)
+      return result
+     errors.append(f'{urlparse(update_url).path or "/"}: сервер не вернул файл')
+     continue
+    _, remote_version, _ = _validate_plugin_update_payload(payload)
+    result['remote_version'] = remote_version
+    if _plugin_version_key(remote_version) <= _plugin_version_key(VERSION):
+     try:
+      if os.path.exists(pending_file):
+       os.remove(pending_file)
+     except Exception:
+      pass
+     result.update(ok=True, changed=False)
+     return result
+    with open(pending_file, 'wb') as file:
+     file.write(payload)
+     file.flush()
+     os.fsync(file.fileno())
+    result.update(ok=True, changed=True)
+    if not PLUGIN_UPDATE_URL and not _db_locked():
+     try:
+      server = _server_cfg()
+      if update_url.casefold().endswith('.py'):
+       server['plugin_update_url'] = update_url
+       _db_save()
+     except Exception:
+      pass
+    return result
+   except Exception as error:
+    errors.append(f'{urlparse(update_url).path or "/"}: {error}')
+  compact = '; '.join(errors[-4:])
+  raise RuntimeError('сервер AutoOffline не отдал корректный файл обновления' + (f': {compact}' if compact else ''))
  except Exception as error:
   result['error'] = str(error)
   logger.exception('%s online update check failed: %s', PREFIX, error)
@@ -5203,8 +5392,7 @@ def init_cardinal(cardinal: 'Cardinal') -> None:
  global _CARDINAL
  _CARDINAL = cardinal
  try:
-  _initialise_database()
-  _auto_unlock_local()
+  _ensure_database_available()
   if not _db_locked():
    _ensure_server_identity()
    repaired_orders = 0
