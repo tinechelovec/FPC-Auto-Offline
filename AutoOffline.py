@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import imaplib
 import io
+import importlib
 import json
 import logging
 import os
@@ -15,6 +16,8 @@ import re
 import secrets
 import shutil
 import struct
+import subprocess
+import sys
 import threading
 import time
 import unicodedata
@@ -26,6 +29,31 @@ from datetime import datetime
 from email.header import decode_header
 from html import escape, unescape
 from urllib.parse import parse_qs, quote, urlencode, urlparse
+
+def _install_missing_dependencies() -> None:
+ missing = []
+ for module_name, package_name in (('telebot', 'pyTelegramBotAPI'), ('cryptography', 'cryptography')):
+  try:
+   importlib.import_module(module_name)
+  except ImportError:
+   missing.append(package_name)
+ if not missing:
+  return
+ commands = ([sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', *missing], [sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--user', *missing])
+ last_error = None
+ for command in commands:
+  try:
+   subprocess.check_call(command, timeout=300)
+   importlib.invalidate_caches()
+   for module_name, package_name in (('telebot', 'pyTelegramBotAPI'), ('cryptography', 'cryptography')):
+    importlib.import_module(module_name)
+   return
+  except Exception as error:
+   last_error = error
+ raise RuntimeError('Не удалось автоматически установить зависимости: ' + ', '.join(missing)) from last_error
+
+_install_missing_dependencies()
+
 from telebot.apihelper import ApiTelegramException
 from telebot.types import InlineKeyboardButton as B
 from telebot.types import InlineKeyboardMarkup as K
@@ -49,7 +77,7 @@ except Exception:
 if TYPE_CHECKING:
  from cardinal import Cardinal
 NAME = 'AutoOffline'
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 DESCRIPTION = 'Выдача Steam Guard (SDA/IMAP), TOTP и Denuvo-активаций через FunPay автоматически и безопасно.'
 CREDITS = '@tinechelovec'
 UUID = '6f7d9d18-3c69-48bb-92f1-3e91e4f1b1c8'
@@ -516,17 +544,84 @@ def _password_key(password: str, salt: bytes, iterations: int=PBKDF2_ITERATIONS)
  raw = hashlib.pbkdf2_hmac('sha256', str(password).encode('utf-8'), salt, int(iterations), dklen=32)
  return base64.urlsafe_b64encode(raw)
 
-def _read_envelope() -> Optional[dict]:
- if not os.path.isfile(DB_FILE):
+def _load_envelope_file(path: str) -> Optional[dict]:
+ if not os.path.isfile(path):
   return None
  try:
-  with open(DB_FILE, 'r', encoding='utf-8') as f:
+  with open(path, 'r', encoding='utf-8') as f:
    payload = json.load(f)
  except Exception as e:
   raise RuntimeError(f'Не удалось прочитать encrypted JSON: {e}') from e
  if not isinstance(payload, dict) or payload.get('format') != DB_FORMAT:
   raise RuntimeError('Файл базы не является encrypted JSON AutoOffline.')
+ required = {'format', 'version', 'cipher', 'kdf', 'ciphertext'}
+ missing = required - set(payload)
+ if missing:
+  raise RuntimeError('В базе отсутствуют поля: ' + ', '.join(sorted(missing)))
  return payload
+
+def _read_envelope() -> Optional[dict]:
+ return _load_envelope_file(DB_FILE)
+
+def _quarantine_database() -> Optional[str]:
+ if not os.path.isfile(DB_FILE):
+  return None
+ stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+ target = f'{DB_FILE}.corrupt.{stamp}.{uuidlib.uuid4().hex[:6]}'
+ try:
+  shutil.copy2(DB_FILE, target)
+  try:
+   os.chmod(target, 384)
+  except Exception:
+   pass
+  return target
+ except Exception:
+  return None
+
+def _restore_database_backup(require_local_decrypt: bool=False) -> bool:
+ if not os.path.isfile(DB_BACKUP_FILE):
+  return False
+ try:
+  envelope = _load_envelope_file(DB_BACKUP_FILE)
+  if envelope is None:
+   return False
+  mode = str((envelope.get('kdf') or {}).get('mode') or '')
+  if require_local_decrypt or mode == 'local':
+   if mode != 'local':
+    return False
+   _decrypt_envelope(envelope, _local_key())
+  raw = open(DB_BACKUP_FILE, 'rb').read()
+  _atomic_write(DB_FILE, raw)
+  return True
+ except Exception as e:
+  logger.error('%s Не удалось восстановить резервную копию базы: %s', PREFIX, e)
+  return False
+
+def _replace_with_fresh_database() -> None:
+ global _DB_CACHE, _DB_KEY, _DB_MODE
+ _quarantine_database()
+ try:
+  if os.path.isfile(DB_FILE):
+   os.remove(DB_FILE)
+ except Exception:
+  pass
+ key = _local_key()
+ db = _default_db()
+ envelope = _encrypt_db(db, key, 'local')
+ _atomic_write(DB_FILE, json.dumps(envelope, ensure_ascii=False, indent=2).encode('utf-8'))
+ _DB_CACHE, _DB_KEY, _DB_MODE = (db, key, 'local')
+
+def _repair_database_file() -> str:
+ global _DB_CACHE, _DB_KEY, _DB_MODE
+ _quarantine_database()
+ if _restore_database_backup():
+  _DB_CACHE = None
+  _DB_KEY = None
+  envelope = _read_envelope()
+  _DB_MODE = str((envelope.get('kdf') or {}).get('mode') or 'unknown') if envelope else None
+  return 'backup'
+ _replace_with_fresh_database()
+ return 'fresh'
 
 def _encrypt_db(db: dict, key: bytes, mode: str, *, salt: Optional[bytes]=None, iterations: int=PBKDF2_ITERATIONS) -> dict:
  _require_crypto()
@@ -555,13 +650,16 @@ def _write_envelope(envelope: dict) -> None:
  raw = json.dumps(envelope, ensure_ascii=False, indent=2).encode('utf-8')
  if os.path.isfile(DB_FILE):
   try:
+   current = _load_envelope_file(DB_FILE)
+   if current is not None and _DB_KEY is not None:
+    _decrypt_envelope(current, _DB_KEY)
    shutil.copy2(DB_FILE, DB_BACKUP_FILE)
    try:
     os.chmod(DB_BACKUP_FILE, 384)
    except Exception:
     pass
   except Exception:
-   pass
+   _quarantine_database()
  _atomic_write(DB_FILE, raw)
 
 def _initialise_database() -> None:
@@ -577,7 +675,13 @@ def _initialise_database() -> None:
 def _auto_unlock_local() -> bool:
  global _DB_CACHE, _DB_KEY, _DB_MODE
  with _DB_LOCK:
-  envelope = _read_envelope()
+  try:
+   envelope = _read_envelope()
+  except Exception as e:
+   logger.error('%s Повреждение файла базы обнаружено: %s', PREFIX, e)
+   source = _repair_database_file()
+   logger.warning('%s База автоматически восстановлена: %s', PREFIX, 'резервная копия' if source == 'backup' else 'создана новая база')
+   envelope = _read_envelope()
   if envelope is None:
    _initialise_database()
    return True
@@ -588,8 +692,20 @@ def _auto_unlock_local() -> bool:
    _DB_KEY = None
    return False
   key = _local_key()
-  _DB_CACHE = _decrypt_envelope(envelope, key)
+  try:
+   _DB_CACHE = _decrypt_envelope(envelope, key)
+  except Exception as e:
+   logger.error('%s Повреждение зашифрованной базы обнаружено: %s', PREFIX, e)
+   _quarantine_database()
+   if not _restore_database_backup(require_local_decrypt=True):
+    raise RuntimeError('База повреждена, а пригодная резервная копия не найдена. Повреждённый файл сохранён отдельно.') from e
+   envelope = _read_envelope()
+   _DB_CACHE = _decrypt_envelope(envelope, key)
+   logger.warning('%s База автоматически восстановлена из резервной копии.', PREFIX)
   _DB_KEY = key
+  _DB_MODE = 'local'
+  _ensure_db_shape(_DB_CACHE)
+  _db_save()
   return True
 
 def _unlock_password(password: str) -> bool:
@@ -4989,17 +5105,24 @@ def _send_backup(cardinal: 'Cardinal', call) -> None:
 
 def _check_database(cardinal: 'Cardinal', call) -> None:
  bot = cardinal.telegram.bot
+ repaired = ''
  try:
-  envelope = _read_envelope()
+  try:
+   envelope = _read_envelope()
+  except Exception:
+   source = _repair_database_file()
+   repaired = ' Восстановление: резервная копия.' if source == 'backup' else ' Восстановление: создана новая база.'
+   envelope = _read_envelope()
   if envelope is None:
-   raise RuntimeError('База отсутствует.')
-  required = {'format', 'version', 'cipher', 'kdf', 'ciphertext'}
-  missing = required - set(envelope)
-  if missing:
-   raise RuntimeError('Нет полей: ' + ', '.join(sorted(missing)))
-  details = 'Envelope корректен.'
+   _initialise_database()
+   envelope = _read_envelope()
+   repaired = ' База была отсутствующей и создана заново.'
+  if str((envelope.get('kdf') or {}).get('mode') or '') == 'local' and _db_locked():
+   _auto_unlock_local()
+  details = 'Envelope корректен.' + repaired
   if not _db_locked():
    db = _ensure_db_shape(_db_get())
+   _db_save()
    details += f" Расшифровка успешна: аккаунтов {len(db['accounts'])}, лотов {len(db['lots'])}, заказов {len(db['orders'])}."
   _answer(bot, call, details, True)
  except Exception as e:
