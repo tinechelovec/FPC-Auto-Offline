@@ -77,7 +77,7 @@ except Exception:
 if TYPE_CHECKING:
  from cardinal import Cardinal
 NAME = 'AutoOffline'
-VERSION = '1.1.1'
+VERSION = '1.1.2'
 DESCRIPTION = 'Выдача Steam Guard (SDA/IMAP), TOTP и Denuvo-активаций через FunPay автоматически и безопасно.'
 CREDITS = '@tinechelovec'
 UUID = '6f7d9d18-3c69-48bb-92f1-3e91e4f1b1c8'
@@ -124,7 +124,8 @@ ORDER_ACTIVE_DAYS = 365
 CREATOR_URL = 'https://t.me/tinechelovec'
 GROUP_URL = 'https://t.me/dev_thc_chat'
 CHANNEL_URL = 'https://t.me/by_thc'
-INSTRUCTION_URL = os.getenv('AUTOOFFLINE_INSTRUCTION_URL', 'https://teletype.in/@tinechelovec/AutoOffline').strip()
+INSTRUCTION_URL = os.getenv('AUTOOFFLINE_INSTRUCTION_URL', 'https://teletype.media/@tinechelovec/Auto-Offline').strip()
+ALT_INSTRUCTION_URL = 'https://github.com/tinechelovec/FPC-Auto-Offline/blob/main/instructions.md'
 PLUGIN_UPDATE_URL = os.getenv('AUTOOFFLINE_PLUGIN_UPDATE_URL', '').strip()
 DEFAULT_SERVER_URL = (os.getenv('AUTOOFFLINE_SERVER_URL') or 'https://dev-thc-autooffline.vercel.app').strip().rstrip('/')
 SMAKMAIL_API_BASE = 'https://api.smakmail.com/api/v1'
@@ -3224,12 +3225,13 @@ def _settings_kb() -> K:
  return kb
 
 def _info_text() -> str:
- return '<b>Ссылки:</b>\n• <b>Чат</b> — помощь, вопросы и обсуждение работы плагина.\n• <b>Канал</b> — новости, версии и объявления.\n• <b>Инструкция</b> — установка и настройка AutoOffline.\n• <b>Разработчик</b> — личный контакт создателя плагина.'
+ return '<b>Ссылки:</b>\n• <b>Чат</b> — помощь, вопросы и обсуждение работы плагина.\n• <b>Канал</b> — новости, версии и объявления.\n• <b>Инструкция</b> — установка и настройка AutoOffline.\n• <b>Альтернативная инструкция</b> — инструкция на GitHub.\n• <b>Разработчик</b> — личный контакт создателя плагина.'
 
 def _info_kb() -> K:
  kb = K()
  kb.row(B('💬 Чат', url=GROUP_URL), B('📢 Канал', url=CHANNEL_URL))
  kb.row(B('📖 Инструкция', url=INSTRUCTION_URL))
+ kb.row(B('📚 Альтернативная инструкция', url=ALT_INSTRUCTION_URL))
  kb.row(B('👤 Разработчик', url=CREATOR_URL))
  kb.row(B('◀️ Назад', callback_data=CB_HOME))
  return kb
