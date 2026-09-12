@@ -77,8 +77,8 @@ except Exception:
 if TYPE_CHECKING:
  from cardinal import Cardinal
 NAME = 'AutoOffline'
-VERSION = '1.1.2'
-DESCRIPTION = 'Выдача Steam Guard (SDA/IMAP), TOTP и Denuvo-активаций через FunPay автоматически и безопасно.'
+VERSION = '1.1.3'
+DESCRIPTION = 'Кто это вообще читает?'
 CREDITS = '@tinechelovec'
 UUID = '6f7d9d18-3c69-48bb-92f1-3e91e4f1b1c8'
 SETTINGS_PAGE = True
@@ -127,7 +127,8 @@ CHANNEL_URL = 'https://t.me/by_thc'
 INSTRUCTION_URL = os.getenv('AUTOOFFLINE_INSTRUCTION_URL', 'https://teletype.media/@tinechelovec/Auto-Offline').strip()
 ALT_INSTRUCTION_URL = 'https://github.com/tinechelovec/FPC-Auto-Offline/blob/main/instructions.md'
 PLUGIN_UPDATE_URL = os.getenv('AUTOOFFLINE_PLUGIN_UPDATE_URL', '').strip()
-DEFAULT_SERVER_URL = (os.getenv('AUTOOFFLINE_SERVER_URL') or 'https://dev-thc-autooffline.vercel.app').strip().rstrip('/')
+DEFAULT_SERVER_URL = (os.getenv('AUTOOFFLINE_SERVER_URL') or 'https://dev-thc.me/autooffline').strip().rstrip('/')
+LEGACY_SERVER_URLS = {'https://dev-thc-autooffline.vercel.app'}
 SMAKMAIL_API_BASE = 'https://api.smakmail.com/api/v1'
 CBT_EDIT_PLUGIN = getattr(CBT, 'EDIT_PLUGIN', 'PLUGIN_EDIT')
 CBT_PLUGIN_SETTINGS = getattr(CBT, 'PLUGIN_SETTINGS', 'PLUGIN_SETTINGS')
@@ -438,7 +439,14 @@ def _ensure_db_shape(db: dict) -> dict:
   g['server'] = {}
  for key, value in base['global']['server'].items():
   g['server'].setdefault(key, value)
- if not str(g['server'].get('url') or '').strip():
+ current_server_url = str(g['server'].get('url') or '').strip().rstrip('/')
+ if current_server_url != DEFAULT_SERVER_URL:
+  g['server']['url'] = DEFAULT_SERVER_URL
+  g['server']['installation_secret'] = ''
+  g['server']['installation_id'] = ''
+  g['server']['registered_build_hash'] = ''
+  g['server']['registered_owner_id'] = ''
+ else:
   g['server']['url'] = DEFAULT_SERVER_URL
  for account in db['accounts']:
   if isinstance(account, dict):
@@ -1917,7 +1925,15 @@ def _plugin_build_hash() -> str:
 
 def _server_cfg() -> dict:
  server = _db_get()['global'].setdefault('server', {})
- if not str(server.get('url') or '').strip():
+ current_url = str(server.get('url') or '').strip().rstrip('/')
+ if current_url != DEFAULT_SERVER_URL:
+  server['url'] = DEFAULT_SERVER_URL
+  server['installation_secret'] = ''
+  server['installation_id'] = ''
+  server['registered_build_hash'] = ''
+  server['registered_owner_id'] = ''
+  _db_save()
+ else:
   server['url'] = DEFAULT_SERVER_URL
  return server
 
@@ -2005,12 +2021,7 @@ def _apply_server_config(cfg: dict) -> None:
  if _db_locked() or not isinstance(cfg, dict):
   return
  server = _server_cfg()
- if str(cfg.get('server_url') or cfg.get('url') or '').strip():
-  new_url = str(cfg.get('server_url') or cfg.get('url')).strip().rstrip('/')
-  if new_url != str(server.get('url') or ''):
-   server['installation_secret'] = ''
-   server['installation_id'] = ''
-  server['url'] = new_url
+ server['url'] = DEFAULT_SERVER_URL
  update_url = str(cfg.get('plugin_update_url') or cfg.get('update_url') or cfg.get('download_url') or '').strip()
  if update_url:
   server['plugin_update_url'] = update_url
